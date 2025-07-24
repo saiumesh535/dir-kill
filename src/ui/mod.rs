@@ -99,17 +99,35 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
     let mut app = App::new(vec![], pattern.to_string(), path.to_string());
     let mut is_scanning = true;
     
-    // Start scanning in background
+    // Start scanning in background (without size calculation for speed)
     let pattern_clone = pattern.to_string();
     let path_clone = path.to_string();
     let directories_sender = std::sync::mpsc::channel();
     let (tx, rx) = directories_sender;
     
+    // Channel for size updates
+    let size_sender = std::sync::mpsc::channel::<(usize, u64, String)>();
+    let (size_tx, size_rx) = size_sender;
+    
     let handle = std::thread::spawn(move || {
-        match fs::find_directories_with_size(&path_clone, &pattern_clone) {
+        match fs::find_directories(&path_clone, &pattern_clone) {
             Ok(dirs) => {
-                for dir in dirs {
-                    let _ = tx.send(dir);
+                for (index, dir_path) in dirs.into_iter().enumerate() {
+                    // Send directory without size initially
+                    let _ = tx.send(DirectoryInfo {
+                        path: dir_path.clone(),
+                        size: 0,
+                        formatted_size: "Calculating...".to_string(),
+                    });
+                    
+                    // Start size calculation in background
+                    let size_tx_clone = size_tx.clone();
+                    let dir_path_clone = dir_path.clone();
+                    std::thread::spawn(move || {
+                        let size = fs::calculate_directory_size(std::path::Path::new(&dir_path_clone)).unwrap_or(0);
+                        let formatted_size = fs::format_size(size);
+                        let _ = size_tx_clone.send((index, size, formatted_size));
+                    });
                 }
             }
             Err(e) => {
@@ -132,6 +150,14 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                 break;
             } else {
                 app.directories.push(dir);
+            }
+        }
+        
+        // Check for size updates
+        while let Ok((index, size, formatted_size)) = size_rx.try_recv() {
+            if index < app.directories.len() {
+                app.directories[index].size = size;
+                app.directories[index].formatted_size = formatted_size;
             }
         }
         
@@ -188,6 +214,12 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                 f.size(),
             );
 
+            // Calculate total size for header
+            let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
+            let total_formatted = fs::format_size(total_size);
+            let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+            let total_count = app.directories.len();
+            
             // Header
             let header = Paragraph::new(vec![
                 Line::from(vec![
@@ -216,6 +248,17 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     Span::styled(" | ", Style::default().fg(TEXT_SECONDARY)),
                     Span::styled(format!("{} items per page", items_per_page), Style::default().fg(TEXT_SECONDARY)),
                 ]),
+                if !app.directories.is_empty() {
+                    Line::from(vec![
+                        Span::styled("💾 Total Size: ", Style::default().fg(TEXT_SECONDARY)),
+                        Span::styled(total_formatted.clone(), Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD)),
+                        Span::styled(" (", Style::default().fg(TEXT_SECONDARY)),
+                        Span::styled(format!("{}/{} calculated", calculated_count, total_count), Style::default().fg(ACCENT_COLOR)),
+                        Span::styled(")", Style::default().fg(TEXT_SECONDARY)),
+                    ])
+                } else {
+                    Line::from(vec![])
+                },
             ])
             .block(
                 Block::default()
@@ -262,7 +305,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         ]),
                         Line::from(vec![
                             Span::styled("   ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled("Calculating directory sizes...", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled("Sizes will be calculated in background...", Style::default().fg(TEXT_SECONDARY)),
                         ]),
                     ]
                 };
@@ -314,6 +357,12 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     .repeat_highlight_symbol(true);
                 f.render_widget(list, main_panels[0]);
                 
+                // Calculate total size
+                let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
+                let total_formatted = fs::format_size(total_size);
+                let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+                let total_count = app.directories.len();
+                
                 // Show details in right panel
                 if let Some(selected_dir) = app.get_selected_directory() {
                     let details_text = vec![
@@ -342,6 +391,19 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         Line::from(vec![
                             Span::styled("Position: ", Style::default().fg(TEXT_SECONDARY)),
                             Span::styled(format!("{} of {}", app.selected + 1, app.directories.len()), Style::default().fg(ACCENT_COLOR)),
+                        ]),
+                        Line::from(vec![]), // Empty line
+                        Line::from(vec![
+                            Span::styled("📊 ", Style::default().fg(ACCENT_COLOR)),
+                            Span::styled("Total Summary", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Total Size: ", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled(total_formatted.clone(), Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD)),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Calculated: ", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled(format!("{}/{}", calculated_count, total_count), Style::default().fg(ACCENT_COLOR)),
                         ]),
                     ];
 
@@ -389,7 +451,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                            Span::styled("⌨️  Navigation: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
                            Span::styled("↑/↓/j/k", Style::default().fg(ACCENT_COLOR)),
                            Span::styled(" to navigate, ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("PgUp/PgDn", Style::default().fg(ACCENT_COLOR)),
+                           Span::styled("←/→", Style::default().fg(ACCENT_COLOR)),
                            Span::styled(" for pages, ", Style::default().fg(TEXT_SECONDARY)),
                            Span::styled("Home/End", Style::default().fg(ACCENT_COLOR)),
                            Span::styled(", ", Style::default().fg(TEXT_SECONDARY)),
@@ -442,8 +504,8 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => app.next(items_per_page),
                            crossterm::event::KeyCode::Home => app.select_first(),
                            crossterm::event::KeyCode::End => app.select_last(),
-                           crossterm::event::KeyCode::PageUp => app.previous_page(items_per_page),
-                           crossterm::event::KeyCode::PageDown => app.next_page(items_per_page),
+                           crossterm::event::KeyCode::Left => app.previous_page(items_per_page),
+                           crossterm::event::KeyCode::Right => app.next_page(items_per_page),
                            _ => {}
                        }
                    }
@@ -682,5 +744,320 @@ mod tests {
         
         let should_show_no_results = has_received_any_data && app.directories.is_empty();
         assert!(should_show_no_results); // Should show no results message
+    }
+
+    #[test]
+    fn test_lazy_size_calculation_initial_state() {
+        // Test that directories start with "Calculating..." placeholder
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        
+        // Add a directory with initial state (no size calculated yet)
+        app.directories.push(DirectoryInfo {
+            path: "test_dir".to_string(),
+            size: 0,
+            formatted_size: "Calculating...".to_string(),
+        });
+        
+        assert_eq!(app.directories[0].size, 0);
+        assert_eq!(app.directories[0].formatted_size, "Calculating...");
+    }
+
+    #[test]
+    fn test_lazy_size_calculation_update() {
+        // Test that size updates work correctly
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        
+        // Add directories with initial state
+        app.directories.push(DirectoryInfo {
+            path: "dir1".to_string(),
+            size: 0,
+            formatted_size: "Calculating...".to_string(),
+        });
+        app.directories.push(DirectoryInfo {
+            path: "dir2".to_string(),
+            size: 0,
+            formatted_size: "Calculating...".to_string(),
+        });
+        
+        // Simulate size update for first directory
+        let index = 0;
+        let size = 1024;
+        let formatted_size = "1.0 KB".to_string();
+        
+        if index < app.directories.len() {
+            app.directories[index].size = size;
+            app.directories[index].formatted_size = formatted_size.clone();
+        }
+        
+        // Verify the update
+        assert_eq!(app.directories[0].size, 1024);
+        assert_eq!(app.directories[0].formatted_size, "1.0 KB");
+        
+        // Verify second directory still has placeholder
+        assert_eq!(app.directories[1].size, 0);
+        assert_eq!(app.directories[1].formatted_size, "Calculating...");
+    }
+
+    #[test]
+    fn test_lazy_size_calculation_multiple_updates() {
+        // Test multiple size updates in sequence
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        
+        // Add multiple directories
+        for i in 0..3 {
+            app.directories.push(DirectoryInfo {
+                path: format!("dir{}", i),
+                size: 0,
+                formatted_size: "Calculating...".to_string(),
+            });
+        }
+        
+        // Simulate size updates in different order
+        let updates = vec![
+            (1, 2048, "2.0 KB"),
+            (0, 1024, "1.0 KB"),
+            (2, 3072, "3.0 KB"),
+        ];
+        
+        for (index, size, formatted_size) in updates {
+            if index < app.directories.len() {
+                app.directories[index].size = size;
+                app.directories[index].formatted_size = formatted_size.to_string();
+            }
+        }
+        
+        // Verify all updates were applied correctly
+        assert_eq!(app.directories[0].size, 1024);
+        assert_eq!(app.directories[0].formatted_size, "1.0 KB");
+        assert_eq!(app.directories[1].size, 2048);
+        assert_eq!(app.directories[1].formatted_size, "2.0 KB");
+        assert_eq!(app.directories[2].size, 3072);
+        assert_eq!(app.directories[2].formatted_size, "3.0 KB");
+    }
+
+    #[test]
+    fn test_lazy_size_calculation_out_of_bounds() {
+        // Test that out-of-bounds updates are handled safely
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        
+        // Add one directory
+        app.directories.push(DirectoryInfo {
+            path: "test_dir".to_string(),
+            size: 0,
+            formatted_size: "Calculating...".to_string(),
+        });
+        
+        // Try to update an index that doesn't exist
+        let invalid_index = 5;
+        let size = 1024;
+        let formatted_size = "1.0 KB".to_string();
+        
+        if invalid_index < app.directories.len() {
+            app.directories[invalid_index].size = size;
+            app.directories[invalid_index].formatted_size = formatted_size;
+        }
+        
+        // Verify the directory wasn't modified (since index was out of bounds)
+        assert_eq!(app.directories[0].size, 0);
+        assert_eq!(app.directories[0].formatted_size, "Calculating...");
+    }
+
+    #[test]
+    fn test_total_size_calculation_empty_list() {
+        let app = App::new(vec![], "test".to_string(), ".".to_string());
+        
+        // Total size should be 0 for empty list
+        let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_size, 0);
+        
+        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_count, 0);
+    }
+
+    #[test]
+    fn test_total_size_calculation_with_initial_sizes() {
+        let directories = vec![
+            DirectoryInfo {
+                path: "dir1".to_string(),
+                size: 1024,
+                formatted_size: "1.0 KB".to_string(),
+            },
+            DirectoryInfo {
+                path: "dir2".to_string(),
+                size: 2048,
+                formatted_size: "2.0 KB".to_string(),
+            },
+            DirectoryInfo {
+                path: "dir3".to_string(),
+                size: 3072,
+                formatted_size: "3.0 KB".to_string(),
+            },
+        ];
+        
+        let app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Total size should be sum of all sizes
+        let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_size, 6144); // 1024 + 2048 + 3072
+        
+        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_count, 3);
+    }
+
+    #[test]
+    fn test_total_size_calculation_with_lazy_updates() {
+        let directories = vec![
+            DirectoryInfo {
+                path: "dir1".to_string(),
+                size: 0, // Initially 0, will be updated
+                formatted_size: "Calculating...".to_string(),
+            },
+            DirectoryInfo {
+                path: "dir2".to_string(),
+                size: 0, // Initially 0, will be updated
+                formatted_size: "Calculating...".to_string(),
+            },
+            DirectoryInfo {
+                path: "dir3".to_string(),
+                size: 0, // Initially 0, will be updated
+                formatted_size: "Calculating...".to_string(),
+            },
+        ];
+        
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Initially all sizes are 0
+        let initial_total: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(initial_total, 0);
+        
+        let initial_calculated = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(initial_calculated, 0);
+        
+        // Update first directory size
+        if 0 < app.directories.len() {
+            app.directories[0].size = 1024;
+            app.directories[0].formatted_size = "1.0 KB".to_string();
+        }
+        let total_after_first: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_after_first, 1024);
+        
+        let calculated_after_first = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_after_first, 1);
+        
+        // Update second directory size
+        if 1 < app.directories.len() {
+            app.directories[1].size = 2048;
+            app.directories[1].formatted_size = "2.0 KB".to_string();
+        }
+        let total_after_second: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_after_second, 3072); // 1024 + 2048
+        
+        let calculated_after_second = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_after_second, 2);
+        
+        // Update third directory size
+        if 2 < app.directories.len() {
+            app.directories[2].size = 3072;
+            app.directories[2].formatted_size = "3.0 KB".to_string();
+        }
+        let total_after_third: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_after_third, 6144); // 1024 + 2048 + 3072
+        
+        let calculated_after_third = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_after_third, 3);
+    }
+
+    #[test]
+    fn test_total_size_calculation_mixed_states() {
+        let directories = vec![
+            DirectoryInfo {
+                path: "dir1".to_string(),
+                size: 1024, // Already calculated
+                formatted_size: "1.0 KB".to_string(),
+            },
+            DirectoryInfo {
+                path: "dir2".to_string(),
+                size: 0, // Not yet calculated
+                formatted_size: "Calculating...".to_string(),
+            },
+            DirectoryInfo {
+                path: "dir3".to_string(),
+                size: 2048, // Already calculated
+                formatted_size: "2.0 KB".to_string(),
+            },
+        ];
+        
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Initial state: 2 calculated, 1 not calculated
+        let initial_total: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(initial_total, 3072); // 1024 + 2048
+        
+        let initial_calculated = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(initial_calculated, 2);
+        
+        // Update the uncounted directory
+        if 1 < app.directories.len() {
+            app.directories[1].size = 4096;
+            app.directories[1].formatted_size = "4.0 KB".to_string();
+        }
+        let final_total: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(final_total, 7168); // 1024 + 4096 + 2048
+        
+        let final_calculated = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(final_calculated, 3);
+    }
+
+    #[test]
+    fn test_total_size_calculation_large_numbers() {
+        let directories = vec![
+            DirectoryInfo {
+                path: "large_dir1".to_string(),
+                size: 1024 * 1024 * 1024, // 1 GB
+                formatted_size: "1.0 GB".to_string(),
+            },
+            DirectoryInfo {
+                path: "large_dir2".to_string(),
+                size: 2 * 1024 * 1024 * 1024, // 2 GB
+                formatted_size: "2.0 GB".to_string(),
+            },
+        ];
+        
+        let app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_size, 3 * 1024 * 1024 * 1024); // 3 GB
+        
+        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_count, 2);
+    }
+
+    #[test]
+    fn test_total_size_calculation_with_zero_sizes() {
+        let directories = vec![
+            DirectoryInfo {
+                path: "empty_dir1".to_string(),
+                size: 0,
+                formatted_size: "0 B".to_string(),
+            },
+            DirectoryInfo {
+                path: "empty_dir2".to_string(),
+                size: 0,
+                formatted_size: "0 B".to_string(),
+            },
+            DirectoryInfo {
+                path: "non_empty_dir".to_string(),
+                size: 1024,
+                formatted_size: "1.0 KB".to_string(),
+            },
+        ];
+        
+        let app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_size, 1024); // Only the non-empty directory contributes
+        
+        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_count, 1); // Only one directory has size > 0
     }
 } 
