@@ -1,0 +1,212 @@
+# Cursor Rules for dir-kill Project
+
+## Project Overview
+This is a sophisticated Rust-based directory management tool with CLI and TUI interfaces. The project uses modern Rust patterns, comprehensive testing, and focuses on user experience with beautiful animations and real-time feedback.
+
+## Key Technologies & Dependencies
+- **Rust**: Latest stable version with 2021 edition
+- **clap**: CLI argument parsing with derive macros
+- **ratatui**: Terminal UI library with crossterm backend
+- **anyhow**: Error handling with human-readable messages
+- **tempfile**: Isolated testing environments
+
+## Architecture Patterns
+
+### Module Structure
+```
+src/
+├── main.rs          # Entry point, delegates to modules
+├── cli/             # Command-line interface (independent)
+├── fs/              # File system operations (independent)
+└── ui/              # Terminal UI (depends on fs)
+```
+
+### State Management
+- Use `App` struct in `src/ui/app.rs` for central state management
+- Implement methods on `App` for state updates
+- Keep state immutable where possible, use method calls for changes
+
+### Concurrency Model
+- Main thread: UI rendering and event handling
+- Background threads: File system operations and size calculations
+- Communication: Thread-safe channels (`std::sync::mpsc`)
+- Never block the UI thread with heavy operations
+
+## Coding Standards
+
+### Error Handling
+- Use `anyhow::Result<T>` for all public functions
+- Add context to errors: `anyhow::Context::context()`
+- Return early with `?` operator
+- Provide user-friendly error messages
+
+### Testing Strategy
+- Write tests for every public function
+- Use `tempfile` for isolated testing environments
+- Test both success and failure cases
+- Aim for >90% code coverage
+
+### UI Development
+- Follow Gruvbox dark theme color palette
+- Use animated elements for user feedback
+- Implement graceful fallbacks for unsupported terminals
+- Maintain 60fps rendering performance
+
+## Key Implementation Patterns
+
+### Directory Scanning
+```rust
+// Use background threads with channels
+let (tx, rx) = std::sync::mpsc::channel();
+std::thread::spawn(move || {
+    // Background scanning work
+    tx.send(result).unwrap();
+});
+```
+
+### TUI Widget Construction
+```rust
+// Use builder pattern for widgets
+let widget = Paragraph::new(text)
+    .block(Block::default()
+        .borders(Borders::ALL)
+        .title("Title"))
+    .style(Style::default().bg(SURFACE_COLOR));
+```
+
+### Selection System
+```rust
+// Implement selection with visual feedback
+pub struct DirectoryInfo {
+    pub selected: bool,
+    // ... other fields
+}
+```
+
+## Performance Considerations
+
+### Real-time UI
+- Keep UI thread responsive at all times
+- Use lazy loading for expensive operations
+- Implement efficient data structures
+- Profile critical paths regularly
+
+### Memory Management
+- Leverage Rust's ownership system
+- Use efficient data structures (Vec, HashMap)
+- Avoid unnecessary allocations in hot paths
+- Implement proper cleanup for temporary resources
+
+## User Experience Principles
+
+### Visual Design
+- Gruvbox dark theme for consistency
+- Animated elements for engagement
+- Clear visual hierarchy
+- Responsive to terminal size changes
+
+### Interaction Design
+- Keyboard-first navigation
+- Intuitive shortcuts (Space, A, D, S)
+- Real-time feedback for all actions
+- Graceful error handling and recovery
+
+## Testing Patterns
+
+### Unit Tests
+```rust
+#[test]
+fn test_function_name() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    // Test in isolated environment
+    // Assert expected behavior
+}
+```
+
+### Integration Tests
+- Test module interactions
+- Test end-to-end workflows
+- Test error conditions
+- Test performance characteristics
+
+## Common Pitfalls to Avoid
+
+### Performance Issues
+- Don't block UI thread with heavy operations
+- Don't allocate memory in rendering loops
+- Don't use inefficient algorithms for large datasets
+- Don't ignore compiler warnings
+
+### UI Issues
+- Don't hardcode colors or styles
+- Don't assume terminal capabilities
+- Don't ignore window resize events
+- Don't forget error handling in UI code
+
+### Testing Issues
+- Don't test with real file system in unit tests
+- Don't ignore edge cases
+- Don't forget to test error conditions
+- Don't skip performance testing
+
+## Development Workflow
+
+### Feature Development
+1. Write tests first (TDD approach)
+2. Implement functionality
+3. Ensure all tests pass
+4. Update documentation
+5. Update memory bank if needed
+
+### Code Review Checklist
+- [ ] All tests pass
+- [ ] No compiler warnings
+- [ ] Error handling is comprehensive
+- [ ] Performance is acceptable
+- [ ] UI is responsive and beautiful
+- [ ] Documentation is updated
+
+## Project-Specific Patterns
+
+### Animation Implementation
+```rust
+// Use time-based animation frames
+fn get_animation_frame() -> &'static str {
+    let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let index = (std::time::Instant::now().elapsed().as_millis() / 100) as usize % frames.len();
+    frames[index]
+}
+```
+
+### Color Management
+```rust
+// Use Gruvbox color constants
+const PRIMARY_COLOR: Color = Color::Rgb(131, 165, 152);
+const ACCENT_COLOR: Color = Color::Rgb(211, 134, 155);
+const SUCCESS_COLOR: Color = Color::Rgb(184, 187, 38);
+```
+
+### Error Propagation
+```rust
+// Use anyhow for consistent error handling
+pub fn some_operation() -> Result<()> {
+    let result = risky_operation()
+        .context("Failed to perform operation")?;
+    Ok(result)
+}
+```
+
+## Success Metrics
+- 77+ tests passing (100% success rate)
+- Real-time UI responsiveness (60fps target)
+- Beautiful and intuitive user interface
+- Comprehensive error handling
+- Cross-platform compatibility
+- Production-ready stability
+
+## Future Considerations
+- Plugin architecture for extensibility
+- Advanced analytics and recommendations
+- Cloud integration capabilities
+- Enterprise features for collaboration
+- Performance optimization for massive datasets 
