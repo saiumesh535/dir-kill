@@ -8,6 +8,7 @@ pub struct DirectoryInfo {
     pub path: String,
     pub size: u64,
     pub formatted_size: String,
+    pub selected: bool,
 }
 
 /// Lists all directories matching the given pattern in the specified path
@@ -65,6 +66,7 @@ pub fn find_directories_with_size(root_path: &str, pattern: &str) -> Result<Vec<
             path: dir_path,
             size,
             formatted_size,
+            selected: false,
         });
     }
     

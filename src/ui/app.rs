@@ -7,6 +7,7 @@ pub struct App {
     pub pattern: String,
     pub path: String,
     pub current_page: usize,
+    pub selection_mode: bool,
 }
 
 impl App {
@@ -17,6 +18,7 @@ impl App {
             pattern,
             path,
             current_page: 0,
+            selection_mode: false,
         }
     }
 
@@ -113,6 +115,56 @@ impl App {
         // Update current page based on selection
         self.current_page = self.selected / items_per_page;
     }
+
+    // Selection methods
+    pub fn toggle_selection_mode(&mut self) {
+        self.selection_mode = !self.selection_mode;
+    }
+
+    pub fn toggle_current_selection(&mut self) {
+        if !self.directories.is_empty() && self.selected < self.directories.len() {
+            self.directories[self.selected].selected = !self.directories[self.selected].selected;
+        }
+    }
+
+    pub fn select_all(&mut self) {
+        for dir in &mut self.directories {
+            dir.selected = true;
+        }
+    }
+
+    pub fn deselect_all(&mut self) {
+        for dir in &mut self.directories {
+            dir.selected = false;
+        }
+    }
+
+    pub fn select_current(&mut self) {
+        if !self.directories.is_empty() && self.selected < self.directories.len() {
+            self.directories[self.selected].selected = true;
+        }
+    }
+
+    pub fn deselect_current(&mut self) {
+        if !self.directories.is_empty() && self.selected < self.directories.len() {
+            self.directories[self.selected].selected = false;
+        }
+    }
+
+    pub fn get_selected_count(&self) -> usize {
+        self.directories.iter().filter(|dir| dir.selected).count()
+    }
+
+    pub fn get_selected_directories(&self) -> Vec<&DirectoryInfo> {
+        self.directories.iter().filter(|dir| dir.selected).collect()
+    }
+
+    pub fn get_selected_total_size(&self) -> u64 {
+        self.directories.iter()
+            .filter(|dir| dir.selected)
+            .map(|dir| dir.size)
+            .sum()
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +176,7 @@ mod tests {
             path: path.to_string(),
             size,
             formatted_size: format!("{} B", size),
+            selected: false,
         }
     }
 
@@ -348,4 +401,77 @@ mod tests {
                app.selected = 24;
                assert_eq!(app.visible_selected_index(items_per_page), 4);
            }
+
+    #[test]
+    fn test_toggle_current_selection() {
+        let mut app = App::new(vec![create_test_directory("dir1", 100)], "test".to_string(), ".".to_string());
+        assert_eq!(app.directories[0].selected, false);
+        app.toggle_current_selection();
+        assert_eq!(app.directories[0].selected, true);
+        app.toggle_current_selection();
+        assert_eq!(app.directories[0].selected, false);
+    }
+
+    #[test]
+    fn test_select_all_and_deselect_all() {
+        let mut app = App::new(
+            vec![create_test_directory("dir1", 100), create_test_directory("dir2", 200)],
+            "test".to_string(), ".".to_string(),
+        );
+        app.select_all();
+        assert!(app.directories.iter().all(|d| d.selected));
+        app.deselect_all();
+        assert!(app.directories.iter().all(|d| !d.selected));
+    }
+
+    #[test]
+    fn test_select_and_deselect_current() {
+        let mut app = App::new(
+            vec![create_test_directory("dir1", 100), create_test_directory("dir2", 200)],
+            "test".to_string(), ".".to_string(),
+        );
+        app.select_current();
+        assert!(app.directories[0].selected);
+        app.deselect_current();
+        assert!(!app.directories[0].selected);
+        app.selected = 1;
+        app.select_current();
+        assert!(app.directories[1].selected);
+    }
+
+    #[test]
+    fn test_get_selected_count_and_directories() {
+        let mut app = App::new(
+            vec![create_test_directory("dir1", 100), create_test_directory("dir2", 200)],
+            "test".to_string(), ".".to_string(),
+        );
+        assert_eq!(app.get_selected_count(), 0);
+        app.directories[0].selected = true;
+        assert_eq!(app.get_selected_count(), 1);
+        let selected_dirs = app.get_selected_directories();
+        assert_eq!(selected_dirs.len(), 1);
+        assert_eq!(selected_dirs[0].path, "dir1");
+    }
+
+    #[test]
+    fn test_get_selected_total_size() {
+        let mut app = App::new(
+            vec![create_test_directory("dir1", 100), create_test_directory("dir2", 200)],
+            "test".to_string(), ".".to_string(),
+        );
+        assert_eq!(app.get_selected_total_size(), 0);
+        app.directories[0].selected = true;
+        app.directories[1].selected = true;
+        assert_eq!(app.get_selected_total_size(), 300);
+    }
+
+    #[test]
+    fn test_toggle_selection_mode() {
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        assert_eq!(app.selection_mode, false);
+        app.toggle_selection_mode();
+        assert_eq!(app.selection_mode, true);
+        app.toggle_selection_mode();
+        assert_eq!(app.selection_mode, false);
+    }
 } 

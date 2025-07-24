@@ -23,6 +23,8 @@ const TEXT_PRIMARY: Color = Color::Rgb(235, 219, 178);    // gruvbox-fg0 (light)
 const TEXT_SECONDARY: Color = Color::Rgb(189, 174, 147);  // gruvbox-fg1 (medium)
 const SELECTION_BG: Color = Color::Rgb(131, 165, 152);    // gruvbox-aqua selection background
 const SELECTION_FG: Color = Color::Rgb(40, 40, 40);       // Dark text on selection
+const SELECTION_INDICATOR_COLOR: Color = Color::Rgb(184, 187, 38);  // gruvbox-green for selection indicators
+const SELECTION_GLOW_COLOR: Color = Color::Rgb(142, 192, 124);      // lighter green for glow effect
 
 /// Remove ./ prefix from path if present
 fn clean_path(path: &str) -> &str {
@@ -38,6 +40,40 @@ fn get_loading_frame() -> &'static str {
     let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let index = (std::time::Instant::now().elapsed().as_millis() / 100) as usize % frames.len();
     frames[index]
+}
+
+/// Get animated directory icon with selection state
+fn get_directory_icon(selected: bool, is_highlighted: bool) -> &'static str {
+    let time = std::time::Instant::now().elapsed().as_millis();
+    
+    if selected {
+        // Animated open directory for selected items - faster animation
+        let open_frames = ["📂", "📁", "📂", "📁", "📂", "📁", "📂", "📁", "📂", "📁"];
+        let index = (time / 120) as usize % open_frames.len();
+        open_frames[index]
+    } else if is_highlighted {
+        // Animated closed directory for highlighted items - slower animation
+        let closed_frames = ["📁", "📂", "📁", "📂", "📁", "📂", "📁", "📂", "📁", "📂"];
+        let index = (time / 250) as usize % closed_frames.len();
+        closed_frames[index]
+    } else {
+        // Static closed directory for normal items
+        "📁"
+    }
+}
+
+/// Get selection indicator color with subtle glow effect
+fn get_selection_indicator_color(selected: bool) -> Color {
+    if selected {
+        let index = (std::time::Instant::now().elapsed().as_millis() / 300) as usize % 2;
+        if index == 0 {
+            SELECTION_INDICATOR_COLOR
+        } else {
+            SELECTION_GLOW_COLOR
+        }
+    } else {
+        TEXT_SECONDARY
+    }
 }
 
 pub mod app;
@@ -118,6 +154,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         path: dir_path.clone(),
                         size: 0,
                         formatted_size: "Calculating...".to_string(),
+                        selected: false,
                     });
                     
                     // Start size calculation in background
@@ -135,6 +172,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     path: format!("ERROR: {}", e),
                     size: 0,
                     formatted_size: "0 B".to_string(),
+                    selected: false,
                 });
             }
         }
@@ -329,15 +367,26 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     let is_selected = global_index == app.selected;
                     
                     // Simplified styling for list items (size info moved to details panel)
-                    let icon_color = if is_selected { SELECTION_FG } else { SUCCESS_COLOR };
                     let path_style = if is_selected {
                         Style::default().fg(SELECTION_FG).bg(SELECTION_BG).add_modifier(Modifier::BOLD)
+                    } else if dir.selected {
+                        Style::default().fg(SELECTION_INDICATOR_COLOR).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
                     } else {
                         Style::default().fg(TEXT_PRIMARY)
                     };
 
                     ListItem::new(vec![Line::from(vec![
-                        Span::styled("📁 ", Style::default().fg(icon_color)),
+                        Span::styled(
+                            format!("{} ", get_directory_icon(dir.selected, is_selected)),
+                            Style::default()
+                                .fg(get_selection_indicator_color(dir.selected))
+                                .add_modifier(if dir.selected { Modifier::BOLD } else { Modifier::empty() })
+                        ),
+                        if dir.selected {
+                            Span::styled("✓ ", Style::default().fg(SELECTION_INDICATOR_COLOR).add_modifier(Modifier::BOLD))
+                        } else {
+                            Span::styled("  ", Style::default())
+                        },
                         Span::styled(clean_path(&dir.path), path_style),
                     ])])
                 }).collect();
@@ -455,12 +504,22 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                            Span::styled(" for pages, ", Style::default().fg(TEXT_SECONDARY)),
                            Span::styled("Home/End", Style::default().fg(ACCENT_COLOR)),
                            Span::styled(", ", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("[Space] select/deselect, [a] all, [d] none, [s] mode", Style::default().fg(ACCENT_COLOR)),
+                           Span::styled(", ", Style::default().fg(TEXT_SECONDARY)),
                            Span::styled("q/ESC", Style::default().fg(ERROR_COLOR)),
                            Span::styled(" to quit", Style::default().fg(TEXT_SECONDARY)),
                        ]),
                        Line::from(vec![
                            Span::styled("📊 Found: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
                            Span::styled(format!("{} directories", app.directories.len()), Style::default().fg(SUCCESS_COLOR)),
+                           if app.get_selected_count() > 0 {
+                               Span::styled(
+                                   format!(" | Selected: {} ({})", app.get_selected_count(), fs::format_size(app.get_selected_total_size())),
+                                   Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD)
+                               )
+                           } else {
+                               Span::styled("", Style::default().fg(SUCCESS_COLOR))
+                           },
                            if is_scanning {
                                Span::styled(" (scanning...)", Style::default().fg(WARNING_COLOR))
                            } else {
@@ -506,6 +565,10 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                            crossterm::event::KeyCode::End => app.select_last(),
                            crossterm::event::KeyCode::Left => app.previous_page(items_per_page),
                            crossterm::event::KeyCode::Right => app.next_page(items_per_page),
+                           crossterm::event::KeyCode::Char(' ') => app.toggle_current_selection(),
+                           crossterm::event::KeyCode::Char('a') => app.select_all(),
+                           crossterm::event::KeyCode::Char('d') => app.deselect_all(),
+                           crossterm::event::KeyCode::Char('s') => app.toggle_selection_mode(),
                            _ => {}
                        }
                    }
@@ -564,8 +627,8 @@ mod tests {
     #[test]
     fn test_app_creation() {
         let directories = vec![
-            DirectoryInfo { path: "dir1".to_string(), size: 100, formatted_size: "100 B".to_string() },
-            DirectoryInfo { path: "dir2".to_string(), size: 200, formatted_size: "200 B".to_string() }
+            DirectoryInfo { path: "dir1".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false },
+            DirectoryInfo { path: "dir2".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false }
         ];
         let app = App::new(directories.clone(), "test".to_string(), ".".to_string());
         assert_eq!(app.directories.len(), directories.len());
@@ -575,9 +638,9 @@ mod tests {
     #[test]
     fn test_app_navigation() {
         let directories = vec![
-            DirectoryInfo { path: "dir1".to_string(), size: 100, formatted_size: "100 B".to_string() },
-            DirectoryInfo { path: "dir2".to_string(), size: 200, formatted_size: "200 B".to_string() },
-            DirectoryInfo { path: "dir3".to_string(), size: 300, formatted_size: "300 B".to_string() }
+            DirectoryInfo { path: "dir1".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false },
+            DirectoryInfo { path: "dir2".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false },
+            DirectoryInfo { path: "dir3".to_string(), size: 300, formatted_size: "300 B".to_string(), selected: false }
         ];
         let mut app = App::new(directories, "test".to_string(), ".".to_string());
         let items_per_page = 20;
@@ -637,6 +700,7 @@ mod tests {
             path: "test_dir".to_string(),
             size: 100,
             formatted_size: "100 B".to_string(),
+            selected: false,
         });
         
         // Should still be scanning after receiving first item
@@ -668,6 +732,7 @@ mod tests {
                 path: format!("dir{}", i),
                 size: i as u64 * 100,
                 formatted_size: format!("{} B", i * 100),
+                selected: false,
             });
             // Simulate receiving data (reset timer)
             scan_start_time = std::time::Instant::now();
@@ -704,6 +769,7 @@ mod tests {
             path: "test_dir".to_string(),
             size: 100,
             formatted_size: "100 B".to_string(),
+            selected: false,
         });
         
         // Should still show loading while scanning
@@ -756,6 +822,7 @@ mod tests {
             path: "test_dir".to_string(),
             size: 0,
             formatted_size: "Calculating...".to_string(),
+            selected: false,
         });
         
         assert_eq!(app.directories[0].size, 0);
@@ -772,11 +839,13 @@ mod tests {
             path: "dir1".to_string(),
             size: 0,
             formatted_size: "Calculating...".to_string(),
+            selected: false,
         });
         app.directories.push(DirectoryInfo {
             path: "dir2".to_string(),
             size: 0,
             formatted_size: "Calculating...".to_string(),
+            selected: false,
         });
         
         // Simulate size update for first directory
@@ -809,6 +878,7 @@ mod tests {
                 path: format!("dir{}", i),
                 size: 0,
                 formatted_size: "Calculating...".to_string(),
+                selected: false,
             });
         }
         
@@ -845,6 +915,7 @@ mod tests {
             path: "test_dir".to_string(),
             size: 0,
             formatted_size: "Calculating...".to_string(),
+            selected: false,
         });
         
         // Try to update an index that doesn't exist
@@ -881,16 +952,19 @@ mod tests {
                 path: "dir1".to_string(),
                 size: 1024,
                 formatted_size: "1.0 KB".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "dir2".to_string(),
                 size: 2048,
                 formatted_size: "2.0 KB".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "dir3".to_string(),
                 size: 3072,
                 formatted_size: "3.0 KB".to_string(),
+                selected: false,
             },
         ];
         
@@ -911,16 +985,19 @@ mod tests {
                 path: "dir1".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "dir2".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "dir3".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
+                selected: false,
             },
         ];
         
@@ -974,16 +1051,19 @@ mod tests {
                 path: "dir1".to_string(),
                 size: 1024, // Already calculated
                 formatted_size: "1.0 KB".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "dir2".to_string(),
                 size: 0, // Not yet calculated
                 formatted_size: "Calculating...".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "dir3".to_string(),
                 size: 2048, // Already calculated
                 formatted_size: "2.0 KB".to_string(),
+                selected: false,
             },
         ];
         
@@ -1015,11 +1095,13 @@ mod tests {
                 path: "large_dir1".to_string(),
                 size: 1024 * 1024 * 1024, // 1 GB
                 formatted_size: "1.0 GB".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "large_dir2".to_string(),
                 size: 2 * 1024 * 1024 * 1024, // 2 GB
                 formatted_size: "2.0 GB".to_string(),
+                selected: false,
             },
         ];
         
@@ -1039,16 +1121,19 @@ mod tests {
                 path: "empty_dir1".to_string(),
                 size: 0,
                 formatted_size: "0 B".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "empty_dir2".to_string(),
                 size: 0,
                 formatted_size: "0 B".to_string(),
+                selected: false,
             },
             DirectoryInfo {
                 path: "non_empty_dir".to_string(),
                 size: 1024,
                 formatted_size: "1.0 KB".to_string(),
+                selected: false,
             },
         ];
         
@@ -1059,5 +1144,78 @@ mod tests {
         
         let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
         assert_eq!(calculated_count, 1); // Only one directory has size > 0
+    }
+
+    #[test]
+    fn test_selection_indicator_logic() {
+        use crate::fs::DirectoryInfo;
+        fn indicator(dir: &DirectoryInfo) -> &'static str {
+            if dir.selected { "☑" } else { "☐" }
+        }
+        let mut dir = DirectoryInfo {
+            path: "foo".to_string(),
+            size: 0,
+            formatted_size: "0 B".to_string(),
+            selected: false,
+        };
+        assert_eq!(indicator(&dir), "☐");
+        dir.selected = true;
+        assert_eq!(indicator(&dir), "☑");
+    }
+
+    #[test]
+    fn test_selection_summary_string() {
+        use crate::fs::DirectoryInfo;
+        use crate::ui::app::App;
+        use crate::fs::format_size;
+        let mut app = App::new(
+            vec![
+                DirectoryInfo { path: "a".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false },
+                DirectoryInfo { path: "b".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false },
+            ],
+            "test".to_string(), ".".to_string(),
+        );
+        // No selection
+        let summary = if app.get_selected_count() > 0 {
+            format!(" | Selected: {} ({})", app.get_selected_count(), format_size(app.get_selected_total_size()))
+        } else {
+            String::new()
+        };
+        assert_eq!(summary, "");
+        // One selected
+        app.directories[0].selected = true;
+        let summary = if app.get_selected_count() > 0 {
+            format!(" | Selected: {} ({})", app.get_selected_count(), format_size(app.get_selected_total_size()))
+        } else {
+            String::new()
+        };
+        assert_eq!(summary, " | Selected: 1 (100 B)");
+        // Both selected
+        app.directories[1].selected = true;
+        let summary = if app.get_selected_count() > 0 {
+            format!(" | Selected: {} ({})", app.get_selected_count(), format_size(app.get_selected_total_size()))
+        } else {
+            String::new()
+        };
+        assert_eq!(summary, " | Selected: 2 (300 B)");
+    }
+
+    #[test]
+    fn test_animated_directory_icon() {
+        // Test that the animated directory icon returns the correct symbols
+        assert_eq!(get_directory_icon(false, false), "📁");
+        assert!(get_directory_icon(true, false).contains("📂") || get_directory_icon(true, false).contains("📁"));
+        assert!(get_directory_icon(false, true).contains("📂") || get_directory_icon(false, true).contains("📁"));
+        
+        // Test that the color function returns different colors for selected vs unselected
+        let selected_color = get_selection_indicator_color(true);
+        let unselected_color = get_selection_indicator_color(false);
+        assert_ne!(selected_color, unselected_color);
+        
+        // Test animation consistency
+        let icon1 = get_directory_icon(true, false);
+        let icon2 = get_directory_icon(true, false);
+        assert!(icon1 == "📂" || icon1 == "📁");
+        assert!(icon2 == "📂" || icon2 == "📁");
     }
 } 
