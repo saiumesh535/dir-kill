@@ -19,12 +19,6 @@ pub enum Commands {
         /// Directory to list (defaults to current directory)
         #[arg(default_value = ".")]
         path: String,
-        /// Show hidden files
-        #[arg(short, long)]
-        all: bool,
-        /// Use long listing format
-        #[arg(short, long)]
-        long: bool,
     },
 }
 
@@ -32,7 +26,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Ls { pattern, path, all: _, long: _ } => {
+        Commands::Ls { pattern, path } => {
             // Use TUI with real-time scanning as default behavior
             ui::display_directories_with_scanning(pattern, path)?;
         }

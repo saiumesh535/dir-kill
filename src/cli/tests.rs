@@ -25,11 +25,9 @@ fn test_ls_default_arguments() {
     let cli = Cli::try_parse_from(args).unwrap();
     
     match cli.command {
-        Commands::Ls { pattern, path, all, long } => {
+        Commands::Ls { pattern, path } => {
             assert_eq!(pattern, "test_pattern");
             assert_eq!(path, ".");
-            assert_eq!(all, false);
-            assert_eq!(long, false);
         }
     }
 }
@@ -41,78 +39,14 @@ fn test_ls_with_path() {
     let cli = Cli::try_parse_from(args).unwrap();
     
     match cli.command {
-        Commands::Ls { pattern, path, all, long } => {
+        Commands::Ls { pattern, path } => {
             assert_eq!(pattern, "test_pattern");
             assert_eq!(path, "/tmp");
-            assert_eq!(all, false);
-            assert_eq!(long, false);
         }
     }
 }
 
-#[test]
-fn test_ls_with_all_flag() {
-    // Test ls command with --all flag
-    let args = vec!["dir-kill", "ls", "--all", "test_pattern"];
-    let cli = Cli::try_parse_from(args).unwrap();
-    
-    match cli.command {
-        Commands::Ls { pattern, path, all, long } => {
-            assert_eq!(pattern, "test_pattern");
-            assert_eq!(path, ".");
-            assert_eq!(all, true);
-            assert_eq!(long, false);
-        }
-    }
-}
 
-#[test]
-fn test_ls_with_long_flag() {
-    // Test ls command with --long flag
-    let args = vec!["dir-kill", "ls", "--long", "test_pattern"];
-    let cli = Cli::try_parse_from(args).unwrap();
-    
-    match cli.command {
-        Commands::Ls { pattern, path, all, long } => {
-            assert_eq!(pattern, "test_pattern");
-            assert_eq!(path, ".");
-            assert_eq!(all, false);
-            assert_eq!(long, true);
-        }
-    }
-}
-
-#[test]
-fn test_ls_with_short_flags() {
-    // Test ls command with short flags
-    let args = vec!["dir-kill", "ls", "-a", "-l", "test_pattern"];
-    let cli = Cli::try_parse_from(args).unwrap();
-    
-    match cli.command {
-        Commands::Ls { pattern, path, all, long } => {
-            assert_eq!(pattern, "test_pattern");
-            assert_eq!(path, ".");
-            assert_eq!(all, true);
-            assert_eq!(long, true);
-        }
-    }
-}
-
-#[test]
-fn test_ls_with_path_and_flags() {
-    // Test ls command with path and flags
-    let args = vec!["dir-kill", "ls", "test_pattern", "/home", "--all", "--long"];
-    let cli = Cli::try_parse_from(args).unwrap();
-    
-    match cli.command {
-        Commands::Ls { pattern, path, all, long } => {
-            assert_eq!(pattern, "test_pattern");
-            assert_eq!(path, "/home");
-            assert_eq!(all, true);
-            assert_eq!(long, true);
-        }
-    }
-}
 
 #[test]
 fn test_invalid_command() {
@@ -153,10 +87,8 @@ fn test_ls_with_pattern() {
     let cli = Cli::try_parse_from(args).unwrap();
     
     match cli.command {
-        Commands::Ls { path, all, long, pattern } => {
+        Commands::Ls { path, pattern } => {
             assert_eq!(path, ".");
-            assert_eq!(all, false);
-            assert_eq!(long, false);
             assert_eq!(pattern, "node_modules");
         }
     }
@@ -169,10 +101,8 @@ fn test_ls_with_short_pattern() {
     let cli = Cli::try_parse_from(args).unwrap();
     
     match cli.command {
-        Commands::Ls { path, all, long, pattern } => {
+        Commands::Ls { path, pattern } => {
             assert_eq!(path, ".");
-            assert_eq!(all, false);
-            assert_eq!(long, false);
             assert_eq!(pattern, "src");
         }
     }
