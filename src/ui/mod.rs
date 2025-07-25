@@ -34,6 +34,135 @@ const MUTED_COLOR: Color = Color::Rgb(146, 131, 116);     // Muted text
 const GRADIENT_START: Color = Color::Rgb(131, 165, 152);  // Gradient start
 const GRADIENT_END: Color = Color::Rgb(184, 187, 38);     // Gradient end
 
+/// Color scheme definitions
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ColorScheme {
+    GruvboxDark,
+    SolarizedDark,
+    Dracula,
+    Nord,
+}
+
+/// Color scheme configuration
+pub struct ThemeColors {
+    pub primary: Color,
+    pub secondary: Color,
+    pub accent: Color,
+    pub success: Color,
+    pub warning: Color,
+    pub error: Color,
+    pub background: Color,
+    pub surface: Color,
+    pub text_primary: Color,
+    pub text_secondary: Color,
+    pub selection_bg: Color,
+    pub selection_fg: Color,
+    pub selection_indicator: Color,
+    pub selection_glow: Color,
+    pub border: Color,
+    pub highlight: Color,
+    pub muted: Color,
+}
+
+impl ThemeColors {
+    pub fn gruvbox_dark() -> Self {
+        Self {
+            primary: Color::Rgb(131, 165, 152),      // gruvbox-aqua
+            secondary: Color::Rgb(250, 189, 47),     // gruvbox-yellow
+            accent: Color::Rgb(211, 134, 155),       // gruvbox-pink
+            success: Color::Rgb(184, 187, 38),       // gruvbox-green
+            warning: Color::Rgb(250, 189, 47),       // gruvbox-yellow
+            error: Color::Rgb(251, 73, 52),          // gruvbox-red
+            background: Color::Rgb(29, 32, 33),      // Enhanced dark background
+            surface: Color::Rgb(40, 40, 40),         // Enhanced surface color
+            text_primary: Color::Rgb(235, 219, 178), // gruvbox-fg0 (light)
+            text_secondary: Color::Rgb(189, 174, 147), // gruvbox-fg1 (medium)
+            selection_bg: Color::Rgb(131, 165, 152), // gruvbox-aqua selection background
+            selection_fg: Color::Rgb(29, 32, 33),    // Dark text on selection
+            selection_indicator: Color::Rgb(184, 187, 38), // gruvbox-green for selection indicators
+            selection_glow: Color::Rgb(142, 192, 124),     // lighter green for glow effect
+            border: Color::Rgb(80, 73, 69),          // Subtle border color
+            highlight: Color::Rgb(254, 128, 25),     // Orange highlight
+            muted: Color::Rgb(146, 131, 116),        // Muted text
+        }
+    }
+
+    pub fn solarized_dark() -> Self {
+        Self {
+            primary: Color::Rgb(38, 139, 210),       // Solarized blue
+            secondary: Color::Rgb(181, 137, 0),      // Solarized yellow
+            accent: Color::Rgb(211, 54, 130),        // Solarized magenta
+            success: Color::Rgb(133, 153, 0),        // Solarized green
+            warning: Color::Rgb(181, 137, 0),        // Solarized yellow
+            error: Color::Rgb(220, 50, 47),          // Solarized red
+            background: Color::Rgb(0, 43, 54),       // Solarized base03
+            surface: Color::Rgb(7, 54, 66),          // Solarized base02
+            text_primary: Color::Rgb(238, 232, 213), // Solarized base2
+            text_secondary: Color::Rgb(131, 148, 150), // Solarized base1
+            selection_bg: Color::Rgb(38, 139, 210),  // Solarized blue
+            selection_fg: Color::Rgb(0, 43, 54),     // Solarized base03
+            selection_indicator: Color::Rgb(133, 153, 0), // Solarized green
+            selection_glow: Color::Rgb(88, 110, 117),     // Solarized base01
+            border: Color::Rgb(88, 110, 117),        // Solarized base01
+            highlight: Color::Rgb(203, 75, 22),      // Solarized orange
+            muted: Color::Rgb(101, 123, 131),        // Solarized base0
+        }
+    }
+
+    pub fn dracula() -> Self {
+        Self {
+            primary: Color::Rgb(139, 233, 253),      // Dracula cyan
+            secondary: Color::Rgb(241, 250, 140),    // Dracula yellow
+            accent: Color::Rgb(255, 121, 198),       // Dracula pink
+            success: Color::Rgb(80, 250, 123),       // Dracula green
+            warning: Color::Rgb(241, 250, 140),      // Dracula yellow
+            error: Color::Rgb(255, 85, 85),          // Dracula red
+            background: Color::Rgb(40, 42, 54),      // Dracula background
+            surface: Color::Rgb(68, 71, 90),         // Dracula current line
+            text_primary: Color::Rgb(248, 248, 242), // Dracula foreground
+            text_secondary: Color::Rgb(189, 147, 249), // Dracula purple
+            selection_bg: Color::Rgb(139, 233, 253), // Dracula cyan
+            selection_fg: Color::Rgb(40, 42, 54),    // Dracula background
+            selection_indicator: Color::Rgb(80, 250, 123), // Dracula green
+            selection_glow: Color::Rgb(98, 114, 164),     // Dracula comment
+            border: Color::Rgb(98, 114, 164),        // Dracula comment
+            highlight: Color::Rgb(255, 184, 108),    // Dracula orange
+            muted: Color::Rgb(98, 114, 164),         // Dracula comment
+        }
+    }
+
+    pub fn nord() -> Self {
+        Self {
+            primary: Color::Rgb(136, 192, 208),      // Nord blue
+            secondary: Color::Rgb(236, 239, 244),    // Nord snow storm
+            accent: Color::Rgb(180, 142, 173),       // Nord purple
+            success: Color::Rgb(163, 190, 140),      // Nord green
+            warning: Color::Rgb(235, 203, 139),      // Nord yellow
+            error: Color::Rgb(191, 97, 106),         // Nord red
+            background: Color::Rgb(46, 52, 64),      // Nord polar night
+            surface: Color::Rgb(59, 66, 82),         // Nord polar night
+            text_primary: Color::Rgb(236, 239, 244), // Nord snow storm
+            text_secondary: Color::Rgb(229, 233, 240), // Nord snow storm
+            selection_bg: Color::Rgb(136, 192, 208), // Nord blue
+            selection_fg: Color::Rgb(46, 52, 64),    // Nord polar night
+            selection_indicator: Color::Rgb(163, 190, 140), // Nord green
+            selection_glow: Color::Rgb(180, 142, 173),     // Nord purple
+            border: Color::Rgb(76, 86, 106),         // Nord polar night
+            highlight: Color::Rgb(208, 135, 112),    // Nord orange
+            muted: Color::Rgb(76, 86, 106),          // Nord polar night
+        }
+    }
+
+    pub fn get_colors(scheme: ColorScheme) -> Self {
+        match scheme {
+            ColorScheme::GruvboxDark => Self::gruvbox_dark(),
+            ColorScheme::SolarizedDark => Self::solarized_dark(),
+            ColorScheme::Dracula => Self::dracula(),
+            ColorScheme::Nord => Self::nord(),
+        }
+    }
+}
+
 /// Remove ./ prefix from path if present
 fn clean_path(path: &str) -> &str {
     if path.starts_with("./") {
@@ -55,6 +184,114 @@ fn get_enhanced_loading_frame() -> &'static str {
     let frames = ["🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊"];
     let index = (std::time::Instant::now().elapsed().as_millis() / 200) as usize % frames.len();
     frames[index]
+}
+
+/// Get animated graph bar with time-based animation
+fn get_animated_graph_bar(value: f64, max_value: f64, width: usize) -> String {
+    if max_value == 0.0 {
+        return " ".repeat(width);
+    }
+    
+    let percentage = (value / max_value).min(1.0);
+    let bar_width = (percentage * width as f64).round() as usize;
+    
+    if bar_width == 0 {
+        return " ".repeat(width);
+    }
+    
+    // Animated bar with different characters based on time
+    let time = std::time::Instant::now().elapsed().as_millis();
+    let animation_frame = (time / 200) % 4;
+    
+    let bar_char = match animation_frame {
+        0 => "█",
+        1 => "▓",
+        2 => "▒",
+        3 => "░",
+        _ => "█",
+    };
+    
+    let bar = bar_char.repeat(bar_width);
+    let padding = " ".repeat(width.saturating_sub(bar_width));
+    format!("{}{}", bar, padding)
+}
+
+/// Get animated pie chart slice
+fn get_animated_pie_slice(_percentage: f64, time: u128) -> &'static str {
+    let frames = ["◐", "◑", "◒", "◓"];
+    let index = (time / 300) as usize % frames.len();
+    frames[index]
+}
+
+/// Get size distribution graph data
+fn get_size_distribution_graph(directories: &[DirectoryInfo]) -> Vec<(&'static str, u64, f64)> {
+    let mut size_ranges = vec![
+        ("0-1MB", 0, 0.0),
+        ("1-10MB", 0, 0.0),
+        ("10-100MB", 0, 0.0),
+        ("100MB-1GB", 0, 0.0),
+        ("1GB+", 0, 0.0),
+    ];
+    
+    for dir in directories {
+        let size_mb = dir.size as f64 / (1024.0 * 1024.0);
+        let index = if size_mb < 1.0 { 0 }
+                   else if size_mb < 10.0 { 1 }
+                   else if size_mb < 100.0 { 2 }
+                   else if size_mb < 1024.0 { 3 }
+                   else { 4 };
+        
+        size_ranges[index].1 += 1;
+    }
+    
+    let total = directories.len() as f64;
+    for (_, count, percentage) in &mut size_ranges {
+        *percentage = if total > 0.0 { *count as f64 / total * 100.0 } else { 0.0 };
+    }
+    
+    size_ranges
+}
+
+/// Highlight search terms in text with different colors
+fn highlight_search_term<'a>(text: &'a str, search_term: &str, normal_style: Style, highlight_color: Color) -> Vec<Span<'a>> {
+    if search_term.is_empty() {
+        return vec![Span::styled(text, normal_style)];
+    }
+    
+    let text_lower = text.to_lowercase();
+    let search_lower = search_term.to_lowercase();
+    
+    if !text_lower.contains(&search_lower) {
+        return vec![Span::styled(text, normal_style)];
+    }
+    
+    let mut spans = Vec::new();
+    let mut current_pos = 0;
+    
+    while let Some(start) = text_lower[current_pos..].find(&search_lower) {
+        let actual_start = current_pos + start;
+        
+        // Add text before the match
+        if actual_start > current_pos {
+            spans.push(Span::styled(&text[current_pos..actual_start], normal_style));
+        }
+        
+        // Add the highlighted match
+        let match_end = actual_start + search_term.len();
+        let highlight_style = Style::default()
+            .fg(highlight_color)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        spans.push(Span::styled(&text[actual_start..match_end], highlight_style));
+        
+        current_pos = match_end;
+    }
+    
+    // Add remaining text after the last match
+    if current_pos < text.len() {
+        spans.push(Span::styled(&text[current_pos..], normal_style));
+    }
+    
+    spans
 }
 
 /// Get beautiful animated directory icon with selection state
@@ -319,9 +556,10 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
             .margin(2)
             .constraints(
                 [
+                    Constraint::Length(3), // Search bar
                     Constraint::Length(4), // Header
                     Constraint::Min(0),    // Main content area
-                    Constraint::Length(5), // Footer (increased for extra line)
+                    Constraint::Length(6), // Footer
                 ]
                 .as_ref(),
             )
@@ -332,22 +570,56 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
             .direction(Direction::Horizontal)
             .constraints(
                 [
-                    Constraint::Percentage(70), // Directory list (70% width)
-                    Constraint::Percentage(30), // Details panel (30% width)
+                    Constraint::Percentage(70), // Directory list
+                    Constraint::Percentage(30), // Details panel
                 ]
                 .as_ref(),
             )
-            .split(chunks[1]);
-        
+            .split(chunks[2]);
+
         let available_height = main_panels[0].height.saturating_sub(2);
         let items_per_page = available_height.max(1) as usize;
-        
+
         terminal.draw(|f| {
+            // Get current theme colors
+            let theme = app.get_current_theme();
+            
             // Set background color for the entire terminal
             f.render_widget(
-                Paragraph::new("").style(Style::default().bg(BACKGROUND_COLOR)),
+                Paragraph::new("").style(Style::default().bg(theme.background)),
                 f.size(),
             );
+
+            // --- btop-style Search Bar ---
+            let search_active = app.is_searching;
+            let search_bar_text = if search_active || !app.search_query.is_empty() {
+                vec![
+                    Line::from(vec![
+                        Span::styled("/ ", Style::default().fg(theme.primary)),
+                        Span::styled(&app.search_query, Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                        Span::styled("█", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!("  {}", app.get_search_status()), Style::default().fg(theme.text_secondary)),
+                    ])
+                ]
+            } else {
+                vec![
+                    Line::from(vec![
+                        Span::styled("/ ", Style::default().fg(theme.primary)),
+                        Span::styled("Type to search...", Style::default().fg(theme.text_secondary)),
+                        Span::styled("  (Press / or Ctrl+F)", Style::default().fg(theme.muted)),
+                    ])
+                ]
+            };
+            let search_bar = Paragraph::new(search_bar_text)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(if search_active { Style::default().fg(theme.accent) } else { Style::default().fg(theme.border) })
+                        .title_style(Style::default().fg(theme.primary).add_modifier(Modifier::BOLD))
+                        .title("🔍 Search")
+                )
+                .style(Style::default().bg(theme.surface));
+            f.render_widget(search_bar, chunks[0]);
 
             // Calculate total size for header
             let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
@@ -403,9 +675,9 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     .title("📊 Search Info")
             )
             .style(Style::default().bg(SURFACE_COLOR));
-            f.render_widget(header, chunks[0]);
+            f.render_widget(header, chunks[1]);
 
-                                                       // Directory list or loading state
+            // Directory list or loading state
             // Show loading if we're still scanning
             if is_scanning {
                 // Show loading state across both panels
@@ -458,10 +730,23 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                 f.render_widget(loading_widget, chunks[1]);
             } else if !app.directories.is_empty() {
                 // Show directory list in left panel with better alignment
-                let visible_items = app.visible_items(items_per_page);
+                let filtered_directories = app.get_filtered_directories();
+                let visible_items = if filtered_directories.is_empty() {
+                    vec![]
+                } else {
+                    let start = app.current_page * items_per_page;
+                    let end = std::cmp::min(start + items_per_page, filtered_directories.len());
+                    filtered_directories.get(start..end).unwrap_or(&[]).iter().collect()
+                };
                 let list_items: Vec<ListItem> = visible_items.iter().enumerate().map(|(visible_index, dir)| {
-                    let global_index = app.current_page * items_per_page + visible_index;
-                    let is_selected = global_index == app.selected;
+                    // For filtered directories, we need to find the actual index in the original list
+                    let actual_index = if app.search_query.is_empty() {
+                        app.current_page * items_per_page + visible_index
+                    } else {
+                        // Find the index of this directory in the original list
+                        app.directories.iter().position(|d| d.path == dir.path).unwrap_or(0)
+                    };
+                    let is_selected = actual_index == app.selected;
                     
                     // Simplified styling for list items (size info moved to details panel)
                     let path_style = if is_selected {
@@ -497,34 +782,42 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         .add_modifier(if dir.selected { Modifier::BOLD } else { Modifier::empty() });
                     
                     let selection_style = if dir.selected {
-                        Style::default().fg(SELECTION_INDICATOR_COLOR).add_modifier(Modifier::BOLD)
+                        Style::default().fg(theme.selection_indicator).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(MUTED_COLOR)
+                        Style::default().fg(theme.muted)
                     };
                     
                     let status_style = match &dir.deletion_status {
                         crate::fs::DeletionStatus::Normal => {
                             match dir.calculation_status {
-                                crate::fs::CalculationStatus::NotStarted => Style::default().fg(MUTED_COLOR),
-                                crate::fs::CalculationStatus::Calculating => Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD),
-                                crate::fs::CalculationStatus::Completed => Style::default().fg(SUCCESS_COLOR),
-                                crate::fs::CalculationStatus::Error(_) => Style::default().fg(ERROR_COLOR),
+                                crate::fs::CalculationStatus::NotStarted => Style::default().fg(theme.muted),
+                                crate::fs::CalculationStatus::Calculating => Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
+                                crate::fs::CalculationStatus::Completed => Style::default().fg(theme.success),
+                                crate::fs::CalculationStatus::Error(_) => Style::default().fg(theme.error),
                             }
                         },
-                        crate::fs::DeletionStatus::Deleting => Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD),
-                        crate::fs::DeletionStatus::Deleted => Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD),
-                        crate::fs::DeletionStatus::Error(_) => Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD),
+                        crate::fs::DeletionStatus::Deleting => Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
+                        crate::fs::DeletionStatus::Deleted => Style::default().fg(theme.success).add_modifier(Modifier::BOLD),
+                        crate::fs::DeletionStatus::Error(_) => Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
+                    };
+
+                    // Create path with search term highlighting
+                    let path_spans = if !app.search_query.is_empty() && path.to_lowercase().contains(&app.search_query.to_lowercase()) {
+                        highlight_search_term(path, &app.search_query, path_style, theme.highlight)
+                    } else {
+                        vec![Span::styled(path, path_style)]
                     };
 
                     // Create beautiful styling for each component
-
-                    ListItem::new(vec![Line::from(vec![
+                    let mut line_spans = vec![
                         Span::styled(format!("{} ", icon), icon_style),
                         Span::styled(format!("{} ", selection_indicator), selection_style),
-                        Span::styled(path, path_style),
-                        Span::styled(" ", Style::default()),
-                        Span::styled(status_icon, status_style),
-                    ])])
+                    ];
+                    line_spans.extend(path_spans);
+                    line_spans.push(Span::styled(" ", Style::default()));
+                    line_spans.push(Span::styled(status_icon, status_style));
+
+                    ListItem::new(vec![Line::from(line_spans)])
                 }).collect();
 
                 let list = List::new(list_items)
@@ -534,7 +827,15 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
 
                             .border_style(Style::default().fg(BORDER_COLOR))
                             .title_style(Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD))
-                            .title(format!("📂 Directories (Page {}/{})", app.current_page + 1, app.total_pages(items_per_page)))
+                            .title(if app.search_query.is_empty() {
+                                format!("📂 Directories (Page {}/{})", app.current_page + 1, app.total_pages(items_per_page))
+                            } else {
+                                format!("📂 Directories (Page {}/{}) [Filtered: {}]", 
+                                    app.current_page + 1, 
+                                    app.total_pages(items_per_page),
+                                    app.get_filtered_count()
+                                )
+                            })
                             .padding(Padding::new(1, 1, 0, 0))
                     )
                     .style(Style::default().fg(TEXT_PRIMARY).bg(SURFACE_COLOR))
@@ -551,7 +852,10 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                 
                 // Show details in right panel
                 if let Some(selected_dir) = app.get_selected_directory() {
-                    let details_text = vec![
+                    let time = std::time::Instant::now().elapsed().as_millis();
+                    let size_distribution = get_size_distribution_graph(&app.directories);
+                    
+                    let mut details_text = vec![
                         Line::from(vec![
                             Span::styled("📁 ", Style::default().fg(SUCCESS_COLOR)),
                             Span::styled("Directory Details", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
@@ -585,6 +889,35 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         ]),
                         Line::from(vec![]), // Empty line
 
+                        // Animated Size Distribution Graph
+                        Line::from(vec![
+                            Span::styled("📊 ", Style::default().fg(ACCENT_COLOR)),
+                            Span::styled("Size Distribution", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("  ", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled(format!("{}", get_animated_pie_slice(0.25, time)), Style::default().fg(PRIMARY_COLOR)),
+                            Span::styled(" ", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled("Total: ", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled(format!("{} dirs", app.directories.len()), Style::default().fg(ACCENT_COLOR)),
+                        ]),
+                    ];
+
+                    // Add animated size distribution bars
+                    for (range, count, percentage) in size_distribution {
+                        if count > 0 {
+                            let bar = get_animated_graph_bar(percentage, 100.0, 15);
+                            details_text.push(Line::from(vec![
+                                Span::styled("  ", Style::default().fg(TEXT_SECONDARY)),
+                                Span::styled(format!("{:8} ", range), Style::default().fg(TEXT_SECONDARY)),
+                                Span::styled(bar, Style::default().fg(PRIMARY_COLOR)),
+                                Span::styled(format!(" {:2}%", percentage as i32), Style::default().fg(ACCENT_COLOR)),
+                            ]));
+                        }
+                    }
+
+                    details_text.extend(vec![
+                        Line::from(vec![]), // Empty line
                         Line::from(vec![
                             Span::styled("📊 ", Style::default().fg(ACCENT_COLOR)),
                             Span::styled("Total Summary", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
@@ -622,7 +955,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         } else {
                             Line::from(vec![])
                         },
-                    ];
+                    ]);
 
                     let details_widget = Paragraph::new(details_text)
                         .block(
@@ -665,78 +998,123 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                                // Footer
                    let footer = Paragraph::new(vec![
                        Line::from(vec![
-                           Span::styled("⌨️  Nav: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
-                           Span::styled("↑/↓/j/k", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(" move, ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("←/→", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(" pages, ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("Home/End", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(", ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("Space", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(" select, ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("a/d", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(" all/none, ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("q", Style::default().fg(ERROR_COLOR)),
-                           Span::styled(" quit", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("⌨️  Nav: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+                           Span::styled("↑/↓/j/k", Style::default().fg(theme.accent)),
+                           Span::styled(" move, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("←/→", Style::default().fg(theme.accent)),
+                           Span::styled(" pages, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("Home/End", Style::default().fg(theme.accent)),
+                           Span::styled(", ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("Space", Style::default().fg(theme.accent)),
+                           Span::styled(" select, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("a/d", Style::default().fg(theme.accent)),
+                           Span::styled(" all/none, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("q", Style::default().fg(theme.error)),
+                           Span::styled(" quit", Style::default().fg(theme.text_secondary)),
                        ]),
                        Line::from(vec![
-                           Span::styled("🗑️  Delete: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
-                           Span::styled("F", Style::default().fg(ERROR_COLOR)),
-                           Span::styled(" current, ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("Ctrl+D/X", Style::default().fg(ERROR_COLOR)),
-                           Span::styled(" current, ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("C", Style::default().fg(ERROR_COLOR)),
-                           Span::styled(" selected (use Space to select)", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("🔍 Search: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+                           Span::styled("/", Style::default().fg(theme.accent)),
+                           Span::styled(" activate, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("Enter", Style::default().fg(theme.accent)),
+                           Span::styled(" confirm, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("Esc", Style::default().fg(theme.accent)),
+                           Span::styled(" clear, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("Ctrl+L", Style::default().fg(theme.accent)),
+                           Span::styled(" clear", Style::default().fg(theme.text_secondary)),
                        ]),
                        Line::from(vec![
-                           Span::styled("📊 Found: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
-                           Span::styled(format!("{} dirs", app.directories.len()), Style::default().fg(SUCCESS_COLOR)),
+                           Span::styled("🎨 Theme: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+                           Span::styled("T", Style::default().fg(theme.accent)),
+                           Span::styled(" cycle (", Style::default().fg(theme.text_secondary)),
+                           Span::styled(app.get_color_scheme_name(), Style::default().fg(theme.highlight)),
+                           Span::styled(") | ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("1-5", Style::default().fg(theme.accent)),
+                           Span::styled(" sort", Style::default().fg(theme.text_secondary)),
+                       ]),
+                       Line::from(vec![
+                           Span::styled("🗑️  Delete: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+                           Span::styled("F", Style::default().fg(theme.error)),
+                           Span::styled(" current, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("Ctrl+D/X", Style::default().fg(theme.error)),
+                           Span::styled(" current, ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("C", Style::default().fg(theme.error)),
+                           Span::styled(" selected (use Space to select)", Style::default().fg(theme.text_secondary)),
+                       ]),
+                       Line::from(vec![
+                           Span::styled("📊 Found: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+                           Span::styled(format!("{} dirs", app.directories.len()), Style::default().fg(theme.success)),
                            if app.get_selected_count() > 0 {
                                Span::styled(
                                    format!(" | Selected: {} ({})", app.get_selected_count(), fs::format_size(app.get_selected_total_size())),
-                                   Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD)
+                                   Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
                                )
                            } else {
-                               Span::styled("", Style::default().fg(SUCCESS_COLOR))
+                               Span::styled("", Style::default().fg(theme.success))
                            },
                            if is_scanning {
-                               Span::styled(" (scanning...)", Style::default().fg(WARNING_COLOR))
+                               Span::styled(" (scanning...)", Style::default().fg(theme.warning))
                            } else {
-                               Span::styled("", Style::default().fg(SUCCESS_COLOR))
+                               Span::styled("", Style::default().fg(theme.success))
                            }
                        ]),
                        Line::from(vec![
-                           Span::styled("📄 Page: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
-                           Span::styled(format!("{} of {}", app.current_page + 1, app.total_pages(items_per_page)), Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(" | ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("🎯 ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
+                           Span::styled("📄 Page: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
+                           Span::styled(format!("{} of {}", app.current_page + 1, app.total_pages(items_per_page)), Style::default().fg(theme.accent)),
+                           Span::styled(" | ", Style::default().fg(theme.text_secondary)),
+                           Span::styled("🎯 ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
                            Span::styled(if app.directories.is_empty() {
                                "None".to_string()
                            } else {
                                format!("{} of {}: ", app.selected + 1, app.directories.len())
-                           }, Style::default().fg(PRIMARY_COLOR)),
+                           }, Style::default().fg(theme.primary)),
                            Span::styled(if app.directories.is_empty() {
                                "".to_string()
                            } else {
                                clean_path(&app.directories[app.selected].path).to_string()
-                           }, Style::default().fg(SELECTION_BG).add_modifier(Modifier::BOLD)),
+                           }, Style::default().fg(theme.selection_bg).add_modifier(Modifier::BOLD)),
                        ]),
                    ])
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(BORDER_COLOR))
-                    .title_style(Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD))
+                    .border_style(Style::default().fg(theme.border))
+                    .title_style(Style::default().fg(theme.warning).add_modifier(Modifier::BOLD))
                     .title("⚙️  Controls")
             )
-            .style(Style::default().bg(SURFACE_COLOR));
-            f.render_widget(footer, chunks[2]);
+            .style(Style::default().bg(theme.surface));
+            f.render_widget(footer, chunks[3]);
         })?;
 
                        // Handle input with shorter timeout to keep UI responsive
                if crossterm::event::poll(std::time::Duration::from_millis(50))? {
                    if let crossterm::event::Event::Key(key_event) = crossterm::event::read()? {
-                       match key_event.code {
+                       // Handle search mode first
+                       if app.is_searching {
+                           match key_event.code {
+                               crossterm::event::KeyCode::Enter => {
+                                   // Exit search mode
+                                   app.is_searching = false;
+                               },
+                               crossterm::event::KeyCode::Esc => {
+                                   // Clear search and exit search mode
+                                   app.clear_search();
+                               },
+                               crossterm::event::KeyCode::Backspace => {
+                                   // Remove last character
+                                   app.search_query.pop();
+                                   app.perform_search();
+                               },
+                               crossterm::event::KeyCode::Char(c) => {
+                                   // Add character to search query
+                                   app.search_query.push(c);
+                                   app.perform_search();
+                               },
+                               _ => {}
+                           }
+                       } else {
+                           // Normal mode key handling
+                           match key_event.code {
                            crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => break,
                            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => app.previous(items_per_page),
                            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => app.next(items_per_page),
@@ -771,8 +1149,40 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                            },
                            // Handle plain 'd' key (least specific)
                            crossterm::event::KeyCode::Char('d') if !key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => app.deselect_all(),
+                           // Search activation
+                           crossterm::event::KeyCode::Char('/') => {
+                               // Enter search mode
+                               app.is_searching = true;
+                           },
+                           // Color scheme cycling
+                           crossterm::event::KeyCode::Char('t') => {
+                               // Cycle through color themes
+                               app.cycle_color_scheme();
+                           },
+                           // Sorting shortcuts
+                           crossterm::event::KeyCode::Char('1') => {
+                               // Sort by name (alphabetical)
+                               app.sort_by_name();
+                           },
+                           crossterm::event::KeyCode::Char('2') => {
+                               // Sort by size (largest first)
+                               app.sort_by_size_desc();
+                           },
+                           crossterm::event::KeyCode::Char('3') => {
+                               // Sort by size (smallest first)
+                               app.sort_by_size_asc();
+                           },
+                           crossterm::event::KeyCode::Char('4') => {
+                               // Sort by last modified (newest first)
+                               app.sort_by_modified_desc();
+                           },
+                           crossterm::event::KeyCode::Char('5') => {
+                               // Sort by last modified (oldest first)
+                               app.sort_by_modified_asc();
+                           },
                            _ => {}
                        }
+                   }
                    }
                }
     }

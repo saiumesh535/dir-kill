@@ -1,5 +1,6 @@
 use crate::fs::DirectoryInfo;
 use std::sync::mpsc;
+use super::{ColorScheme, ThemeColors};
 
 /// Application state for TUI
 pub struct App {
@@ -14,6 +15,13 @@ pub struct App {
     pub deletion_receiver: Option<mpsc::Receiver<DeletionMessage>>,
     pub total_freed_space: u64,
     pub freed_space_history: Vec<FreedSpaceEntry>,
+    // Search functionality
+    pub search_query: String,
+    pub search_history: Vec<String>,
+    pub filtered_directories: Vec<usize>, // Indices of filtered directories
+    pub is_searching: bool,
+    // Color scheme
+    pub color_scheme: ColorScheme,
 }
 
 /// Entry for tracking freed space
@@ -67,36 +75,128 @@ impl App {
             deletion_receiver: None,
             total_freed_space: 0,
             freed_space_history: Vec::new(),
+            // Search functionality
+            search_query: String::new(),
+            search_history: Vec::new(),
+            filtered_directories: Vec::new(),
+            is_searching: false,
+            // Color scheme
+            color_scheme: ColorScheme::GruvboxDark,
         }
     }
 
     pub fn next(&mut self, items_per_page: usize) {
         if !self.directories.is_empty() {
-            self.selected = (self.selected + 1) % self.directories.len();
-            self.update_selection_for_pagination(items_per_page);
+            if self.search_query.is_empty() {
+                // Normal navigation
+                self.selected = (self.selected + 1) % self.directories.len();
+                self.update_selection_for_pagination(items_per_page);
+            } else {
+                // Search mode navigation
+                self.next_filtered(items_per_page);
+            }
         }
     }
 
     pub fn previous(&mut self, items_per_page: usize) {
         if !self.directories.is_empty() {
-            self.selected = if self.selected == 0 {
-                self.directories.len() - 1
+            if self.search_query.is_empty() {
+                // Normal navigation
+                self.selected = if self.selected == 0 {
+                    self.directories.len() - 1
+                } else {
+                    self.selected - 1
+                };
+                self.update_selection_for_pagination(items_per_page);
             } else {
-                self.selected - 1
-            };
-            self.update_selection_for_pagination(items_per_page);
+                // Search mode navigation
+                self.previous_filtered(items_per_page);
+            }
         }
     }
 
     pub fn select_first(&mut self) {
         if !self.directories.is_empty() {
-            self.selected = 0;
+            if self.search_query.is_empty() {
+                self.selected = 0;
+            } else {
+                self.select_first_filtered();
+            }
         }
     }
 
     pub fn select_last(&mut self) {
         if !self.directories.is_empty() {
-            self.selected = self.directories.len() - 1;
+            if self.search_query.is_empty() {
+                self.selected = self.directories.len() - 1;
+            } else {
+                self.select_last_filtered();
+            }
+        }
+    }
+
+    // Filtered navigation methods
+    fn next_filtered(&mut self, items_per_page: usize) {
+        let filtered_dirs = self.get_filtered_directories();
+        if !filtered_dirs.is_empty() {
+            // Find current selection in filtered list
+            let current_filtered_index = filtered_dirs.iter()
+                .position(|d| d.path == self.directories[self.selected].path)
+                .unwrap_or(0);
+            
+            // Move to next item in filtered list
+            let next_filtered_index = (current_filtered_index + 1) % filtered_dirs.len();
+            let next_dir = filtered_dirs[next_filtered_index];
+            
+            // Find the original index of this directory
+            if let Some(original_index) = self.directories.iter().position(|d| d.path == next_dir.path) {
+                self.selected = original_index;
+                self.update_selection_for_pagination(items_per_page);
+            }
+        }
+    }
+
+    fn previous_filtered(&mut self, items_per_page: usize) {
+        let filtered_dirs = self.get_filtered_directories();
+        if !filtered_dirs.is_empty() {
+            // Find current selection in filtered list
+            let current_filtered_index = filtered_dirs.iter()
+                .position(|d| d.path == self.directories[self.selected].path)
+                .unwrap_or(0);
+            
+            // Move to previous item in filtered list
+            let prev_filtered_index = if current_filtered_index == 0 {
+                filtered_dirs.len() - 1
+            } else {
+                current_filtered_index - 1
+            };
+            let prev_dir = filtered_dirs[prev_filtered_index];
+            
+            // Find the original index of this directory
+            if let Some(original_index) = self.directories.iter().position(|d| d.path == prev_dir.path) {
+                self.selected = original_index;
+                self.update_selection_for_pagination(items_per_page);
+            }
+        }
+    }
+
+    fn select_first_filtered(&mut self) {
+        let filtered_dirs = self.get_filtered_directories();
+        if !filtered_dirs.is_empty() {
+            let first_dir = filtered_dirs[0];
+            if let Some(original_index) = self.directories.iter().position(|d| d.path == first_dir.path) {
+                self.selected = original_index;
+            }
+        }
+    }
+
+    fn select_last_filtered(&mut self) {
+        let filtered_dirs = self.get_filtered_directories();
+        if !filtered_dirs.is_empty() {
+            let last_dir = filtered_dirs[filtered_dirs.len() - 1];
+            if let Some(original_index) = self.directories.iter().position(|d| d.path == last_dir.path) {
+                self.selected = original_index;
+            }
         }
     }
 
@@ -114,17 +214,32 @@ impl App {
 
     // Pagination methods
     pub fn total_pages(&self, items_per_page: usize) -> usize {
-        if self.directories.is_empty() || items_per_page == 0 {
+        let total_items = if self.search_query.is_empty() {
+            self.directories.len()
+        } else {
+            self.get_filtered_directories().len()
+        };
+        
+        if total_items == 0 || items_per_page == 0 {
             0
         } else {
-            (self.directories.len() - 1) / items_per_page + 1
+            (total_items - 1) / items_per_page + 1
         }
     }
 
     pub fn visible_items(&self, items_per_page: usize) -> Vec<&DirectoryInfo> {
-        let start = self.current_page * items_per_page;
-        let end = std::cmp::min(start + items_per_page, self.directories.len());
-        self.directories.get(start..end).unwrap_or(&[]).iter().collect()
+        if self.search_query.is_empty() {
+            // Normal pagination
+            let start = self.current_page * items_per_page;
+            let end = std::cmp::min(start + items_per_page, self.directories.len());
+            self.directories.get(start..end).unwrap_or(&[]).iter().collect()
+        } else {
+            // Filtered pagination
+            let filtered_dirs = self.get_filtered_directories();
+            let start = self.current_page * items_per_page;
+            let end = std::cmp::min(start + items_per_page, filtered_dirs.len());
+            filtered_dirs.get(start..end).unwrap_or(&[]).to_vec()
+        }
     }
 
     pub fn visible_selected_index(&self, items_per_page: usize) -> usize {
@@ -584,6 +699,156 @@ impl App {
             ))
         }
     }
+
+    // Search functionality methods
+    pub fn set_search_query(&mut self, query: String) {
+        self.search_query = query.clone();
+        self.is_searching = !query.is_empty();
+        self.perform_search();
+        
+        // Add to search history if not empty and not already present
+        if !query.is_empty() && !self.search_history.contains(&query) {
+            self.search_history.push(query);
+            // Keep only last 10 searches
+            if self.search_history.len() > 10 {
+                self.search_history.remove(0);
+            }
+        }
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.is_searching = false;
+        self.filtered_directories.clear();
+    }
+
+    pub fn perform_search(&mut self) {
+        if self.search_query.is_empty() {
+            self.filtered_directories.clear();
+            self.is_searching = false;
+            return;
+        }
+
+        self.is_searching = true;
+        self.filtered_directories = self.directories
+            .iter()
+            .enumerate()
+            .filter(|(_, dir)| {
+                let query = self.search_query.to_lowercase();
+                let path = dir.path.to_lowercase();
+                path.contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect();
+
+        // Reset selection to first filtered item if current selection is not in filtered results
+        if !self.filtered_directories.is_empty() && !self.filtered_directories.contains(&self.selected) {
+            self.selected = self.filtered_directories[0];
+        }
+    }
+
+    pub fn get_filtered_directories(&self) -> Vec<&DirectoryInfo> {
+        if self.search_query.is_empty() {
+            self.directories.iter().collect()
+        } else {
+            self.directories.iter().filter(|d| d.path.to_lowercase().contains(&self.search_query.to_lowercase())).collect()
+        }
+    }
+
+    pub fn get_filtered_count(&self) -> usize {
+        if self.search_query.is_empty() {
+            self.directories.len()
+        } else {
+            self.filtered_directories.len()
+        }
+    }
+
+    pub fn get_search_status(&self) -> String {
+        if self.search_query.is_empty() {
+            format!("{} directories", self.directories.len())
+        } else {
+            let count = self.get_filtered_directories().len();
+            format!("{} of {} directories", count, self.directories.len())
+        }
+    }
+
+    // Color scheme management
+    pub fn cycle_color_scheme(&mut self) {
+        self.color_scheme = match self.color_scheme {
+            ColorScheme::GruvboxDark => ColorScheme::SolarizedDark,
+            ColorScheme::SolarizedDark => ColorScheme::Dracula,
+            ColorScheme::Dracula => ColorScheme::Nord,
+            ColorScheme::Nord => ColorScheme::GruvboxDark,
+        };
+    }
+
+    pub fn get_current_theme(&self) -> ThemeColors {
+        ThemeColors::get_colors(self.color_scheme)
+    }
+
+    pub fn get_color_scheme_name(&self) -> &'static str {
+        match self.color_scheme {
+            ColorScheme::GruvboxDark => "Gruvbox Dark",
+            ColorScheme::SolarizedDark => "Solarized Dark",
+            ColorScheme::Dracula => "Dracula",
+            ColorScheme::Nord => "Nord",
+        }
+    }
+
+    // Sorting methods
+    pub fn sort_by_name(&mut self) {
+        self.directories.sort_by(|a, b| a.path.cmp(&b.path));
+        // Reset selection to first item after sorting
+        if !self.directories.is_empty() {
+            self.selected = 0;
+        }
+    }
+
+    pub fn sort_by_size_desc(&mut self) {
+        self.directories.sort_by(|a, b| b.size.cmp(&a.size));
+        // Reset selection to first item after sorting
+        if !self.directories.is_empty() {
+            self.selected = 0;
+        }
+    }
+
+    pub fn sort_by_size_asc(&mut self) {
+        self.directories.sort_by(|a, b| a.size.cmp(&b.size));
+        // Reset selection to first item after sorting
+        if !self.directories.is_empty() {
+            self.selected = 0;
+        }
+    }
+
+    pub fn sort_by_modified_desc(&mut self) {
+        self.directories.sort_by(|a, b| {
+            match (&a.last_modified, &b.last_modified) {
+                (Some(a_time), Some(b_time)) => b_time.cmp(a_time),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+        // Reset selection to first item after sorting
+        if !self.directories.is_empty() {
+            self.selected = 0;
+        }
+    }
+
+    pub fn sort_by_modified_asc(&mut self) {
+        self.directories.sort_by(|a, b| {
+            match (&a.last_modified, &b.last_modified) {
+                (Some(a_time), Some(b_time)) => a_time.cmp(b_time),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+        // Reset selection to first item after sorting
+        if !self.directories.is_empty() {
+            self.selected = 0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -614,6 +879,13 @@ mod tests {
         assert_eq!(app.selected, 0);
         assert_eq!(app.pattern, "test");
         assert_eq!(app.path, ".");
+        // Test search initialization
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.search_history.len(), 0);
+        assert_eq!(app.filtered_directories.len(), 0);
+        assert_eq!(app.is_searching, false);
+        // Test color scheme initialization
+        assert_eq!(app.color_scheme, ColorScheme::GruvboxDark);
     }
 
                #[test]
@@ -1062,5 +1334,121 @@ mod tests {
         // After deletion, progress should be cleared
         assert!(!app.is_deleting());
         assert!(app.get_deletion_progress().is_none());
+    }
+
+    // Search functionality tests
+    #[test]
+    fn test_search_functionality() {
+        let directories = vec![
+            create_test_directory("node_modules", 100),
+            create_test_directory("src", 200),
+            create_test_directory("target", 300),
+            create_test_directory("docs", 400)
+        ];
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Test initial state
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.is_searching, false);
+        assert_eq!(app.get_filtered_count(), 4);
+        
+        // Test search for "node"
+        app.set_search_query("node".to_string());
+        assert_eq!(app.search_query, "node");
+        assert_eq!(app.is_searching, true);
+        assert_eq!(app.get_filtered_count(), 1);
+        assert_eq!(app.get_search_status(), "1 of 4 directories");
+        
+        // Test search for "src"
+        app.set_search_query("src".to_string());
+        assert_eq!(app.get_filtered_count(), 1);
+        
+        // Test case insensitive search
+        app.set_search_query("NODE".to_string());
+        assert_eq!(app.get_filtered_count(), 1);
+        
+        // Test clear search
+        app.clear_search();
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.is_searching, false);
+        assert_eq!(app.get_filtered_count(), 4);
+        assert_eq!(app.get_search_status(), "4 directories");
+    }
+
+    #[test]
+    fn test_search_history() {
+        let directories = vec![
+            create_test_directory("dir1", 100),
+            create_test_directory("dir2", 200)
+        ];
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Test search history
+        app.set_search_query("test1".to_string());
+        app.set_search_query("test2".to_string());
+        app.set_search_query("test3".to_string());
+        
+        assert_eq!(app.search_history.len(), 3);
+        assert_eq!(app.search_history[0], "test1");
+        assert_eq!(app.search_history[1], "test2");
+        assert_eq!(app.search_history[2], "test3");
+        
+        // Test duplicate prevention
+        app.set_search_query("test1".to_string());
+        assert_eq!(app.search_history.len(), 3); // Should not add duplicate
+        
+        // Test history limit (add more than 10)
+        for i in 4..15 {
+            app.set_search_query(format!("test{}", i));
+        }
+        assert_eq!(app.search_history.len(), 10); // Should be limited to 10
+        assert_eq!(app.search_history[0], "test5"); // Oldest should be removed
+        assert_eq!(app.search_history[9], "test14"); // Newest should be last
+    }
+
+    #[test]
+    fn test_search_selection_behavior() {
+        let directories = vec![
+            create_test_directory("node_modules", 100),
+            create_test_directory("src", 200),
+            create_test_directory("target", 300),
+            create_test_directory("docs", 400)
+        ];
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Select second item
+        app.selected = 1;
+        assert_eq!(app.selected, 1);
+        
+        // Search for something that doesn't include the selected item
+        app.set_search_query("node".to_string());
+        // Should reset selection to first filtered item
+        assert_eq!(app.selected, 0);
+        
+        // Search for something that includes the selected item
+        app.set_search_query("src".to_string());
+        // Should keep current selection
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn test_empty_search() {
+        let directories = vec![
+            create_test_directory("dir1", 100),
+            create_test_directory("dir2", 200)
+        ];
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Test empty search
+        app.set_search_query("".to_string());
+        assert_eq!(app.search_query, "");
+        assert_eq!(app.is_searching, false);
+        assert_eq!(app.get_filtered_count(), 2);
+        assert_eq!(app.get_search_status(), "2 directories");
+        
+        // Test search for non-existent item
+        app.set_search_query("nonexistent".to_string());
+        assert_eq!(app.get_filtered_count(), 0);
+        assert_eq!(app.get_search_status(), "0 of 2 directories");
     }
 } 
