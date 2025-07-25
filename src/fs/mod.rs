@@ -2,12 +2,14 @@ use std::fs;
 use std::path::Path;
 use anyhow::{Result, bail};
 
-/// Directory information with path and size
+/// Directory information with path, size, and last modified date
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectoryInfo {
     pub path: String,
     pub size: u64,
     pub formatted_size: String,
+    pub last_modified: Option<std::time::SystemTime>,
+    pub formatted_last_modified: String,
     pub selected: bool,
     pub deletion_status: DeletionStatus,
     pub calculation_status: CalculationStatus,
@@ -86,11 +88,20 @@ pub fn find_directories_with_size(root_path: &str, pattern: &str) -> Result<Vec<
         let path = Path::new(&dir_path);
         let size = calculate_directory_size(path).unwrap_or(0);
         let formatted_size = format_size(size);
+        // Get last modified time for the parent directory (not the matching directory itself)
+        let parent_path = path.parent().unwrap_or(path);
+        let last_modified = get_directory_last_modified(parent_path);
+        let formatted_last_modified = last_modified
+            .as_ref()
+            .map(|time| format_last_modified(time))
+            .unwrap_or_else(|| "Unknown".to_string());
         
         directory_infos.push(DirectoryInfo {
             path: dir_path,
             size,
             formatted_size,
+            last_modified,
+            formatted_last_modified,
             selected: false,
             deletion_status: DeletionStatus::Normal,
             calculation_status: CalculationStatus::Completed,
@@ -158,6 +169,66 @@ pub fn calculate_directory_size(path: &Path) -> Result<u64> {
     }
     
     Ok(total_size)
+}
+
+/// Get the last modified time of a directory
+pub fn get_directory_last_modified(path: &Path) -> Option<std::time::SystemTime> {
+    match fs::metadata(path) {
+        Ok(metadata) => metadata.modified().ok(),
+        Err(_) => None,
+    }
+}
+
+/// Format last modified time in a human-readable format
+pub fn format_last_modified(time: &std::time::SystemTime) -> String {
+    use chrono::{DateTime, Local};
+    
+    let datetime: DateTime<Local> = DateTime::from(*time);
+    let now = Local::now();
+    let duration = now.signed_duration_since(datetime);
+    
+    if duration.num_days() > 0 {
+        if duration.num_days() == 1 {
+            "1 day ago".to_string()
+        } else if duration.num_days() < 7 {
+            format!("{} days ago", duration.num_days())
+        } else if duration.num_days() < 30 {
+            let weeks = duration.num_days() / 7;
+            if weeks == 1 {
+                "1 week ago".to_string()
+            } else {
+                format!("{} weeks ago", weeks)
+            }
+        } else if duration.num_days() < 365 {
+            let months = duration.num_days() / 30;
+            if months == 1 {
+                "1 month ago".to_string()
+            } else {
+                format!("{} months ago", months)
+            }
+        } else {
+            let years = duration.num_days() / 365;
+            if years == 1 {
+                "1 year ago".to_string()
+            } else {
+                format!("{} years ago", years)
+            }
+        }
+    } else if duration.num_hours() > 0 {
+        if duration.num_hours() == 1 {
+            "1 hour ago".to_string()
+        } else {
+            format!("{} hours ago", duration.num_hours())
+        }
+    } else if duration.num_minutes() > 0 {
+        if duration.num_minutes() == 1 {
+            "1 minute ago".to_string()
+        } else {
+            format!("{} minutes ago", duration.num_minutes())
+        }
+    } else {
+        "Just now".to_string()
+    }
 }
 
 /// Format bytes into human-readable format

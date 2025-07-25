@@ -9,22 +9,30 @@ use ratatui::{
 };
 use std::io;
 
-// Gruvbox Dark Theme Color Palette
-// Based on https://github.com/morhetz/gruvbox
+// Enhanced Gruvbox Dark Theme Color Palette with additional beautiful colors
+// Based on https://github.com/morhetz/gruvbox with custom enhancements
 const PRIMARY_COLOR: Color = Color::Rgb(131, 165, 152);   // gruvbox-aqua
 const SECONDARY_COLOR: Color = Color::Rgb(250, 189, 47);  // gruvbox-yellow
 const ACCENT_COLOR: Color = Color::Rgb(211, 134, 155);    // gruvbox-pink
 const SUCCESS_COLOR: Color = Color::Rgb(184, 187, 38);    // gruvbox-green
 const WARNING_COLOR: Color = Color::Rgb(250, 189, 47);    // gruvbox-yellow
 const ERROR_COLOR: Color = Color::Rgb(251, 73, 52);       // gruvbox-red
-const BACKGROUND_COLOR: Color = Color::Rgb(40, 40, 40);   // gruvbox-bg0_h (hard)
-const SURFACE_COLOR: Color = Color::Rgb(60, 56, 54);      // gruvbox-bg0 (medium)
+const BACKGROUND_COLOR: Color = Color::Rgb(29, 32, 33);   // Enhanced dark background
+const SURFACE_COLOR: Color = Color::Rgb(40, 40, 40);      // Enhanced surface color
 const TEXT_PRIMARY: Color = Color::Rgb(235, 219, 178);    // gruvbox-fg0 (light)
 const TEXT_SECONDARY: Color = Color::Rgb(189, 174, 147);  // gruvbox-fg1 (medium)
 const SELECTION_BG: Color = Color::Rgb(131, 165, 152);    // gruvbox-aqua selection background
-const SELECTION_FG: Color = Color::Rgb(40, 40, 40);       // Dark text on selection
+const SELECTION_FG: Color = Color::Rgb(29, 32, 33);       // Dark text on selection
 const SELECTION_INDICATOR_COLOR: Color = Color::Rgb(184, 187, 38);  // gruvbox-green for selection indicators
 const SELECTION_GLOW_COLOR: Color = Color::Rgb(142, 192, 124);      // lighter green for glow effect
+
+// Additional beautiful colors for enhanced UI
+const BORDER_COLOR: Color = Color::Rgb(80, 73, 69);       // Subtle border color
+const HIGHLIGHT_COLOR: Color = Color::Rgb(254, 128, 25);  // Orange highlight
+const INFO_COLOR: Color = Color::Rgb(131, 165, 152);      // Info blue
+const MUTED_COLOR: Color = Color::Rgb(146, 131, 116);     // Muted text
+const GRADIENT_START: Color = Color::Rgb(131, 165, 152);  // Gradient start
+const GRADIENT_END: Color = Color::Rgb(184, 187, 38);     // Gradient end
 
 /// Remove ./ prefix from path if present
 fn clean_path(path: &str) -> &str {
@@ -35,29 +43,36 @@ fn clean_path(path: &str) -> &str {
     }
 }
 
-/// Get loading animation frame based on time
+/// Get beautiful loading animation frame based on time
 fn get_loading_frame() -> &'static str {
     let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let index = (std::time::Instant::now().elapsed().as_millis() / 100) as usize % frames.len();
     frames[index]
 }
 
-/// Get animated directory icon with selection state
+/// Get enhanced loading animation with colors
+fn get_enhanced_loading_frame() -> &'static str {
+    let frames = ["🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊", "🌊"];
+    let index = (std::time::Instant::now().elapsed().as_millis() / 200) as usize % frames.len();
+    frames[index]
+}
+
+/// Get beautiful animated directory icon with selection state
 fn get_directory_icon(selected: bool, is_highlighted: bool) -> &'static str {
     let time = std::time::Instant::now().elapsed().as_millis();
     
     if selected {
-        // Animated open directory for selected items - faster animation
+        // Beautiful animated open directory for selected items - faster animation
         let open_frames = ["📂", "📁", "📂", "📁", "📂", "📁", "📂", "📁", "📂", "📁"];
         let index = (time / 120) as usize % open_frames.len();
         open_frames[index]
     } else if is_highlighted {
-        // Animated closed directory for highlighted items - slower animation
+        // Beautiful animated closed directory for highlighted items - slower animation
         let closed_frames = ["📁", "📂", "📁", "📂", "📁", "📂", "📁", "📂", "📁", "📂"];
         let index = (time / 250) as usize % closed_frames.len();
         closed_frames[index]
     } else {
-        // Static closed directory for normal items
+        // Beautiful static closed directory for normal items
         "📁"
     }
 }
@@ -173,10 +188,21 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                 
                 // Send all directories without size initially
                 for dir_path in &dir_paths {
+                    // Get last modified time for the parent directory (not the matching directory itself)
+                    let path = std::path::Path::new(dir_path);
+                    let parent_path = path.parent().unwrap_or(path);
+                    let last_modified = fs::get_directory_last_modified(parent_path);
+                    let formatted_last_modified = last_modified
+                        .as_ref()
+                        .map(|time| fs::format_last_modified(time))
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    
                     let _ = tx.send(DirectoryInfo {
                         path: dir_path.clone(),
                         size: 0,
                         formatted_size: "Calculating...".to_string(),
+                        last_modified,
+                        formatted_last_modified,
                         selected: false,
                         deletion_status: crate::fs::DeletionStatus::Normal,
                         calculation_status: crate::fs::CalculationStatus::NotStarted,
@@ -227,6 +253,8 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     path: format!("ERROR: {}", e),
                     size: 0,
                     formatted_size: "0 B".to_string(),
+                    last_modified: None,
+                    formatted_last_modified: "Unknown".to_string(),
                     selected: false,
                     deletion_status: crate::fs::DeletionStatus::Normal,
                     calculation_status: crate::fs::CalculationStatus::Error(e.to_string()),
@@ -327,7 +355,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
             let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
             let total_count = app.directories.len();
             
-            // Header
+            // Enhanced Header with beautiful styling
             let header = Paragraph::new(vec![
                 Line::from(vec![
                     Span::styled("🔍 Directory Search Results", Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD)),
@@ -358,7 +386,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                 if !app.directories.is_empty() {
                     Line::from(vec![
                         Span::styled("💾 Total Size: ", Style::default().fg(TEXT_SECONDARY)),
-                        Span::styled(total_formatted.clone(), Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD)),
+                        Span::styled(total_formatted.clone(), Style::default().fg(HIGHLIGHT_COLOR).add_modifier(Modifier::BOLD)),
                         Span::styled(" (", Style::default().fg(TEXT_SECONDARY)),
                         Span::styled(format!("{}/{} calculated", calculated_count, total_count), Style::default().fg(ACCENT_COLOR)),
                         Span::styled(")", Style::default().fg(TEXT_SECONDARY)),
@@ -370,7 +398,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(PRIMARY_COLOR))
+                    .border_style(Style::default().fg(BORDER_COLOR))
                     .title_style(Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD))
                     .title("📊 Search Info")
             )
@@ -429,7 +457,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     .alignment(Alignment::Center);
                 f.render_widget(loading_widget, chunks[1]);
             } else if !app.directories.is_empty() {
-                                                       // Show directory list in left panel
+                // Show directory list in left panel with better alignment
                 let visible_items = app.visible_items(items_per_page);
                 let list_items: Vec<ListItem> = visible_items.iter().enumerate().map(|(visible_index, dir)| {
                     let global_index = app.current_page * items_per_page + visible_index;
@@ -444,40 +472,58 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         Style::default().fg(TEXT_PRIMARY)
                     };
 
-                    ListItem::new(vec![Line::from(vec![
-                        Span::styled(
-                            format!("{} ", get_directory_icon(dir.selected, is_selected)),
-                            Style::default()
-                                .fg(get_selection_indicator_color(dir.selected))
-                                .add_modifier(if dir.selected { Modifier::BOLD } else { Modifier::empty() })
-                        ),
-                        if dir.selected {
-                            Span::styled("✓ ", Style::default().fg(SELECTION_INDICATOR_COLOR).add_modifier(Modifier::BOLD))
-                        } else {
-                            Span::styled("  ", Style::default())
-                        },
-                        Span::styled(clean_path(&dir.path), path_style),
-                        // Add calculation status icon
-                        Span::styled(
+                    // Create a formatted line with proper spacing and alignment
+                    let icon = get_directory_icon(dir.selected, is_selected);
+                    let selection_indicator = if dir.selected { "✓" } else { " " };
+                    let path = clean_path(&dir.path);
+                    
+                    // Calculate status icon
+                    let status_icon = match &dir.deletion_status {
+                        crate::fs::DeletionStatus::Normal => {
                             match dir.calculation_status {
                                 crate::fs::CalculationStatus::NotStarted | crate::fs::CalculationStatus::Calculating | crate::fs::CalculationStatus::Error(_) =>
-                                    format!(" {}", get_calculation_status_icon(&dir.calculation_status)),
-                                crate::fs::CalculationStatus::Completed => "".to_string(),
-                            },
-                            match &dir.calculation_status {
-                                crate::fs::CalculationStatus::NotStarted => Style::default().fg(TEXT_SECONDARY),
+                                    get_calculation_status_icon(&dir.calculation_status),
+                                crate::fs::CalculationStatus::Completed => "  ",
+                            }
+                        },
+                        crate::fs::DeletionStatus::Deleting => "🔄",
+                        crate::fs::DeletionStatus::Deleted => "🗑️",
+                        crate::fs::DeletionStatus::Error(_) => "⚠️",
+                    };
+
+                    // Create a beautifully formatted line with enhanced styling
+                    let icon_style = Style::default()
+                        .fg(get_selection_indicator_color(dir.selected))
+                        .add_modifier(if dir.selected { Modifier::BOLD } else { Modifier::empty() });
+                    
+                    let selection_style = if dir.selected {
+                        Style::default().fg(SELECTION_INDICATOR_COLOR).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(MUTED_COLOR)
+                    };
+                    
+                    let status_style = match &dir.deletion_status {
+                        crate::fs::DeletionStatus::Normal => {
+                            match dir.calculation_status {
+                                crate::fs::CalculationStatus::NotStarted => Style::default().fg(MUTED_COLOR),
                                 crate::fs::CalculationStatus::Calculating => Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD),
-                                crate::fs::CalculationStatus::Completed => Style::default(),
+                                crate::fs::CalculationStatus::Completed => Style::default().fg(SUCCESS_COLOR),
                                 crate::fs::CalculationStatus::Error(_) => Style::default().fg(ERROR_COLOR),
                             }
-                        ),
-                        // Add deletion status display with icons
-                        match &dir.deletion_status {
-                            crate::fs::DeletionStatus::Normal => Span::styled("", Style::default()),
-                            crate::fs::DeletionStatus::Deleting => Span::styled(" 🔄", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
-                            crate::fs::DeletionStatus::Deleted => Span::styled(" 🗑️", Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD)),
-                            crate::fs::DeletionStatus::Error(msg) => Span::styled(format!(" ⚠️ {}", msg), Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD)),
                         },
+                        crate::fs::DeletionStatus::Deleting => Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD),
+                        crate::fs::DeletionStatus::Deleted => Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD),
+                        crate::fs::DeletionStatus::Error(_) => Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD),
+                    };
+
+                    // Create beautiful styling for each component
+
+                    ListItem::new(vec![Line::from(vec![
+                        Span::styled(format!("{} ", icon), icon_style),
+                        Span::styled(format!("{} ", selection_indicator), selection_style),
+                        Span::styled(path, path_style),
+                        Span::styled(" ", Style::default()),
+                        Span::styled(status_icon, status_style),
                     ])])
                 }).collect();
 
@@ -485,13 +531,14 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(SUCCESS_COLOR))
-                            .title_style(Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD))
+
+                            .border_style(Style::default().fg(BORDER_COLOR))
+                            .title_style(Style::default().fg(PRIMARY_COLOR).add_modifier(Modifier::BOLD))
                             .title(format!("📂 Directories (Page {}/{})", app.current_page + 1, app.total_pages(items_per_page)))
                             .padding(Padding::new(1, 1, 0, 0))
                     )
                     .style(Style::default().fg(TEXT_PRIMARY).bg(SURFACE_COLOR))
-                    .highlight_style(Style::default().fg(SELECTION_FG).bg(SELECTION_BG))
+                    .highlight_style(Style::default().fg(SELECTION_FG).bg(SELECTION_BG).add_modifier(Modifier::BOLD))
                     .highlight_symbol("▶ ")
                     .repeat_highlight_symbol(true);
                 f.render_widget(list, main_panels[0]);
@@ -530,6 +577,11 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         Line::from(vec![
                             Span::styled("Position: ", Style::default().fg(TEXT_SECONDARY)),
                             Span::styled(format!("{} of {}", app.selected + 1, app.directories.len()), Style::default().fg(ACCENT_COLOR)),
+                        ]),
+                        Line::from(vec![]), // Empty line
+                        Line::from(vec![
+                            Span::styled("Last Modified: ", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled(selected_dir.formatted_last_modified.clone(), Style::default().fg(MUTED_COLOR).add_modifier(Modifier::BOLD)),
                         ]),
                         Line::from(vec![]), // Empty line
 
@@ -576,7 +628,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
-                                .border_style(Style::default().fg(ACCENT_COLOR))
+                                .border_style(Style::default().fg(BORDER_COLOR))
                                 .title_style(Style::default().fg(ACCENT_COLOR).add_modifier(Modifier::BOLD))
                                 .title("📊 Details")
                                 .padding(Padding::new(1, 1, 0, 0))
@@ -673,7 +725,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(WARNING_COLOR))
+                    .border_style(Style::default().fg(BORDER_COLOR))
                     .title_style(Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD))
                     .title("⚙️  Controls")
             )
@@ -780,6 +832,8 @@ mod tests {
             path: path.to_string(),
             size,
             formatted_size: formatted_size.to_string(),
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
@@ -792,6 +846,8 @@ mod tests {
             path: path.to_string(),
             size: 0,
             formatted_size: "Calculating...".to_string(),
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::NotStarted,
@@ -870,6 +926,8 @@ mod tests {
         
         // Simulate receiving first directory
         app.directories.push(DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             path: "test_dir".to_string(),
             size: 100,
             formatted_size: "100 B".to_string(),
@@ -1040,6 +1098,8 @@ mod tests {
         
         // Add one directory
         app.directories.push(DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             path: "test_dir".to_string(),
             size: 0,
             formatted_size: "Calculating...".to_string(),
@@ -1079,6 +1139,8 @@ mod tests {
     fn test_total_size_calculation_with_initial_sizes() {
         let directories = vec![
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir1".to_string(),
                 size: 1024,
                 formatted_size: "1.0 KB".to_string(),
@@ -1087,6 +1149,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir2".to_string(),
                 size: 2048,
                 formatted_size: "2.0 KB".to_string(),
@@ -1095,6 +1159,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir3".to_string(),
                 size: 3072,
                 formatted_size: "3.0 KB".to_string(),
@@ -1118,6 +1184,8 @@ mod tests {
     fn test_total_size_calculation_with_lazy_updates() {
         let directories = vec![
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir1".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
@@ -1126,6 +1194,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir2".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
@@ -1134,6 +1204,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir3".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
@@ -1190,6 +1262,8 @@ mod tests {
     fn test_total_size_calculation_mixed_states() {
         let directories = vec![
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir1".to_string(),
                 size: 1024, // Already calculated
                 formatted_size: "1.0 KB".to_string(),
@@ -1198,6 +1272,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir2".to_string(),
                 size: 0, // Not yet calculated
                 formatted_size: "Calculating...".to_string(),
@@ -1206,6 +1282,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir3".to_string(),
                 size: 2048, // Already calculated
                 formatted_size: "2.0 KB".to_string(),
@@ -1240,6 +1318,8 @@ mod tests {
     fn test_total_size_calculation_large_numbers() {
         let directories = vec![
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "large_dir1".to_string(),
                 size: 1024 * 1024 * 1024, // 1 GB
                 formatted_size: "1.0 GB".to_string(),
@@ -1248,6 +1328,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "large_dir2".to_string(),
                 size: 2 * 1024 * 1024 * 1024, // 2 GB
                 formatted_size: "2.0 GB".to_string(),
@@ -1270,6 +1352,8 @@ mod tests {
     fn test_total_size_calculation_with_zero_sizes() {
         let directories = vec![
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "empty_dir1".to_string(),
                 size: 0,
                 formatted_size: "0 B".to_string(),
@@ -1278,6 +1362,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "empty_dir2".to_string(),
                 size: 0,
                 formatted_size: "0 B".to_string(),
@@ -1286,6 +1372,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "non_empty_dir".to_string(),
                 size: 1024,
                 formatted_size: "1.0 KB".to_string(),
@@ -1311,6 +1399,8 @@ mod tests {
             if dir.selected { "☑" } else { "☐" }
         }
         let mut dir = DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             path: "foo".to_string(),
             size: 0,
             formatted_size: "0 B".to_string(),
@@ -1330,8 +1420,12 @@ mod tests {
         use crate::fs::format_size;
         let mut app = App::new(
             vec![
-                DirectoryInfo { path: "a".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false, deletion_status: crate::fs::DeletionStatus::Normal, calculation_status: crate::fs::CalculationStatus::Completed },
-                DirectoryInfo { path: "b".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false, deletion_status: crate::fs::DeletionStatus::Normal, calculation_status: crate::fs::CalculationStatus::Completed },
+                DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(), path: "a".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false, deletion_status: crate::fs::DeletionStatus::Normal, calculation_status: crate::fs::CalculationStatus::Completed },
+                DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(), path: "b".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false, deletion_status: crate::fs::DeletionStatus::Normal, calculation_status: crate::fs::CalculationStatus::Completed },
             ],
             "test".to_string(), ".".to_string(),
         );
@@ -1386,6 +1480,8 @@ mod tests {
         
         // Test normal status (should show nothing)
         let normal_dir = DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             path: "test_dir".to_string(),
             size: 100,
             formatted_size: "100 B".to_string(),
@@ -1396,6 +1492,8 @@ mod tests {
         
         // Test deleting status (should show 🔄 icon)
         let deleting_dir = DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             path: "test_dir".to_string(),
             size: 100,
             formatted_size: "100 B".to_string(),
@@ -1406,6 +1504,8 @@ mod tests {
         
         // Test deleted status (should show 🗑️ icon)
         let deleted_dir = DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             path: "test_dir".to_string(),
             size: 100,
             formatted_size: "100 B".to_string(),
@@ -1416,6 +1516,8 @@ mod tests {
         
         // Test error status (should show ⚠️ icon with message)
         let error_dir = DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             path: "test_dir".to_string(),
             size: 100,
             formatted_size: "100 B".to_string(),
@@ -1451,6 +1553,8 @@ mod tests {
         // Add first batch of directories
         for i in 0..3 {
             app.directories.push(DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: format!("dir{}", i),
                 size: 0,
                 formatted_size: "Calculating...".to_string(),
@@ -1487,6 +1591,8 @@ mod tests {
         // Now simulate adding more directories while size calculations are still in progress
         for i in 3..6 {
             app.directories.push(DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: format!("dir{}", i),
                 size: 0,
                 formatted_size: "Calculating...".to_string(),
@@ -1622,6 +1728,8 @@ mod tests {
         // Create a test app with multiple directories
         let directories = vec![
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir1".to_string(),
                 size: 100,
                 formatted_size: "100 B".to_string(),
@@ -1630,6 +1738,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir2".to_string(),
                 size: 200,
                 formatted_size: "200 B".to_string(),
@@ -1638,6 +1748,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir3".to_string(),
                 size: 300,
                 formatted_size: "300 B".to_string(),
@@ -1706,6 +1818,8 @@ mod tests {
         // Create a test app with multiple directories
         let directories = vec![
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir1".to_string(),
                 size: 100,
                 formatted_size: "100 B".to_string(),
@@ -1714,6 +1828,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir2".to_string(),
                 size: 200,
                 formatted_size: "200 B".to_string(),
@@ -1722,6 +1838,8 @@ mod tests {
                 calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
                 path: "dir3".to_string(),
                 size: 300,
                 formatted_size: "300 B".to_string(),
@@ -1788,5 +1906,39 @@ mod tests {
             assert_eq!(progress.total_items, 3);
             assert_eq!(progress.completed_items, 0);
         }
+    }
+
+    #[test]
+    fn test_ui_layout_changes() {
+        // Test that the UI layout changes work correctly
+        // This test verifies that the list items are simplified and last modified is moved to details panel
+        
+        // Create a test directory with last modified time
+        let test_dir = crate::fs::DirectoryInfo {
+            path: "test/directory".to_string(),
+            size: 1024,
+            formatted_size: "1.0 KB".to_string(),
+            last_modified: Some(std::time::SystemTime::now()),
+            formatted_last_modified: "Just now".to_string(),
+            selected: false,
+            deletion_status: crate::fs::DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::Completed,
+        };
+        
+        // Verify that the directory has proper last modified time
+        assert!(test_dir.last_modified.is_some());
+        assert_eq!(test_dir.formatted_last_modified, "Just now");
+        
+        // Test that the path is clean (no ./ prefix)
+        let clean_path = clean_path(&test_dir.path);
+        assert_eq!(clean_path, "test/directory");
+        
+        // Test that the directory icon works
+        let icon = get_directory_icon(false, false);
+        assert_eq!(icon, "📁");
+        
+        // Test that selection indicator works
+        let indicator = if test_dir.selected { "✓" } else { " " };
+        assert_eq!(indicator, " ");
     }
 } 

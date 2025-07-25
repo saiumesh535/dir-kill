@@ -221,3 +221,49 @@ fn test_find_directories_with_size() {
     // Clean up
     temp_dir.close().unwrap();
 } 
+
+#[test]
+fn test_last_modified_from_parent_directory() {
+    let temp_dir = TempDir::new().unwrap();
+    let dir_path = temp_dir.path();
+    
+    // Create a project structure: project/node_modules
+    let project_dir = dir_path.join("project");
+    let node_modules_dir = project_dir.join("node_modules");
+    
+    fs::create_dir_all(&project_dir).unwrap();
+    fs::create_dir_all(&node_modules_dir).unwrap();
+    
+    // Add a file to the project directory (not node_modules)
+    fs::write(project_dir.join("package.json"), "{}").unwrap();
+    
+    // Wait a moment to ensure different timestamps
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    
+    // Add a file to node_modules
+    fs::write(node_modules_dir.join("some_file.txt"), "content").unwrap();
+    
+    // Find node_modules directories
+    let directories = find_directories_with_size(dir_path.to_str().unwrap(), "node_modules").unwrap();
+    
+    assert_eq!(directories.len(), 1);
+    
+    let dir_info = &directories[0];
+    assert!(dir_info.path.contains("node_modules"));
+    
+    // The last modified time should be from the project directory, not node_modules
+    assert!(dir_info.last_modified.is_some());
+    
+    // Get the actual timestamps to verify
+    let project_modified = get_directory_last_modified(&project_dir).unwrap();
+    let node_modules_modified = get_directory_last_modified(&node_modules_dir).unwrap();
+    
+    // The displayed last modified should match the project directory, not node_modules
+    assert_eq!(dir_info.last_modified.unwrap(), project_modified);
+    assert_ne!(dir_info.last_modified.unwrap(), node_modules_modified);
+    
+    // Clean up
+    temp_dir.close().unwrap();
+} 
+
+ 

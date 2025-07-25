@@ -595,6 +595,8 @@ mod tests {
             path: path.to_string(),
             size,
             formatted_size: format!("{} B", size),
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
