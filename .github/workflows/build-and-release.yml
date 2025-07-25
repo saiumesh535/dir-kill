@@ -254,41 +254,10 @@ jobs:
             cp "$file" release-assets/
           done
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Releasing
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: ${{ steps.get_version.outputs.tag }}
-          release_name: Release ${{ steps.get_version.outputs.version }}
-          body: |
-            ## dir-kill ${{ steps.get_version.outputs.version }}
-            
-            ### Downloads
-            - **Linux (x86_64)**: `dir-kill-linux-x86_64`
-            - **Windows (x86_64)**: `dir-kill-windows-x86_64.exe`
-            - **macOS (x86_64)**: `dir-kill-macos-x86_64`
-            - **macOS (Apple Silicon)**: `dir-kill-macos-aarch64`
-            
-            ### Installation
-            Download the appropriate binary for your platform and make it executable:
-            ```bash
-            chmod +x dir-kill-linux-x86_64
-            ```
-            
-            ### Verification
-            Verify the download integrity using the provided SHA256 checksums.
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Assets
-        run: |
-          for file in release-assets/*; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file..."
-              gh release upload ${{ steps.get_version.outputs.tag }} "$file" --clobber
-            fi
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: "Release ${{ steps.get_version.outputs.version }}"
+          tag: ${{ steps.get_version.outputs.tag }}
+          artifacts: "dir-kill-linux-x86_64, dir-kill-windows-x86_64.exe, dir-kill-macos-x86_64, dir-kill-macos-aarch64"
+          token: ${{ secrets.GITHUB_TOKEN }}
