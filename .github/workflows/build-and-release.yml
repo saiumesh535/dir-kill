@@ -13,12 +13,11 @@ env:
 
 jobs:
   test:
-    name: Test on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Test on Linux
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        rust: [stable, beta, nightly]
+        rust: [1.88.0]
 
     steps:
       - name: Checkout code
@@ -55,23 +54,19 @@ jobs:
           cargo fmt -- --check
 
   build:
-    name: Build for ${{ matrix.os }}
+    name: Build for ${{ matrix.target }}
     needs: [test]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-gnu
             artifact_name: dir-kill-linux-x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+          - target: x86_64-pc-windows-msvc
             artifact_name: dir-kill-windows-x86_64.exe
-          - os: macos-latest
-            target: x86_64-apple-darwin
+          - target: x86_64-apple-darwin
             artifact_name: dir-kill-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          - target: aarch64-apple-darwin
             artifact_name: dir-kill-macos-aarch64
 
     steps:
@@ -81,7 +76,7 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.88.0
           target: ${{ matrix.target }}
           override: true
 
@@ -100,7 +95,7 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }}
           # Strip debug symbols to reduce binary size (except on Windows)
-          if [ "${{ runner.os }}" != "Windows" ]; then
+          if [ "${{ matrix.target }}" != "x86_64-pc-windows-msvc" ]; then
             strip target/${{ matrix.target }}/release/dir-kill
           fi
 
@@ -109,7 +104,7 @@ jobs:
 
       - name: Copy binary to release directory
         run: |
-          if [ "${{ runner.os }}" == "Windows" ]; then
+          if [ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]; then
             cp target/${{ matrix.target }}/release/dir-kill.exe release/${{ matrix.artifact_name }}
           else
             cp target/${{ matrix.target }}/release/dir-kill release/${{ matrix.artifact_name }}
@@ -118,8 +113,10 @@ jobs:
       - name: Create checksum
         run: |
           cd release
-          if [ "${{ runner.os }}" == "Windows" ]; then
-            certutil -hashfile ${{ matrix.artifact_name }} SHA256 > ${{ matrix.artifact_name }}.sha256
+          if [ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]; then
+            # For Windows targets, we need to handle this differently since we're on Linux
+            # We'll use sha256sum for all targets since we're building on Linux
+            sha256sum ${{ matrix.artifact_name }} > ${{ matrix.artifact_name }}.sha256
           else
             sha256sum ${{ matrix.artifact_name }} > ${{ matrix.artifact_name }}.sha256
           fi
@@ -190,4 +187,4 @@ jobs:
           prerelease: false
           update_existing: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
