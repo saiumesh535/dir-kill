@@ -9,6 +9,31 @@ pub struct DirectoryInfo {
     pub size: u64,
     pub formatted_size: String,
     pub selected: bool,
+    pub deletion_status: DeletionStatus,
+    pub calculation_status: CalculationStatus,
+}
+
+/// Status of directory deletion
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeletionStatus {
+    Normal,
+    Deleting,
+    Deleted,
+    Error(String),
+}
+
+/// Status of directory size calculation
+///
+/// - NotStarted: waiting to be calculated (shows hourglass)
+/// - Calculating: in progress (shows spinner)
+/// - Completed: done (shows no icon)
+/// - Error: failed (shows error icon)
+#[derive(Debug, Clone, PartialEq)]
+pub enum CalculationStatus {
+    NotStarted,
+    Calculating,
+    Completed,
+    Error(String),
 }
 
 /// Lists all directories matching the given pattern in the specified path
@@ -67,6 +92,8 @@ pub fn find_directories_with_size(root_path: &str, pattern: &str) -> Result<Vec<
             size,
             formatted_size,
             selected: false,
+            deletion_status: DeletionStatus::Normal,
+            calculation_status: CalculationStatus::Completed,
         });
     }
     

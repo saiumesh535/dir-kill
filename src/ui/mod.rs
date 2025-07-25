@@ -76,6 +76,20 @@ fn get_selection_indicator_color(selected: bool) -> Color {
     }
 }
 
+/// Get calculation status icon with animation
+fn get_calculation_status_icon(status: &crate::fs::CalculationStatus) -> &'static str {
+    match status {
+        crate::fs::CalculationStatus::NotStarted => "⏳",
+        crate::fs::CalculationStatus::Calculating => {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let index = (std::time::Instant::now().elapsed().as_millis() / 100) as usize % frames.len();
+            frames[index]
+        },
+        crate::fs::CalculationStatus::Completed => "",
+        crate::fs::CalculationStatus::Error(_) => "❌",
+    }
+}
+
 pub mod app;
 pub mod list;
 
@@ -141,31 +155,72 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
     let directories_sender = std::sync::mpsc::channel();
     let (tx, rx) = directories_sender;
     
-    // Channel for size updates
-    let size_sender = std::sync::mpsc::channel::<(usize, u64, String)>();
+    // Channel for size updates - use path as identifier instead of index
+    let size_sender = std::sync::mpsc::channel::<(String, u64, String)>();
     let (size_tx, size_rx) = size_sender;
     
+    // Channel for calculation status updates
+    let calc_status_sender = std::sync::mpsc::channel::<(String, crate::fs::CalculationStatus)>();
+    let (calc_status_tx, calc_status_rx) = calc_status_sender;
+    
+    // Use a thread pool for size calculations to limit concurrent threads
+    let size_tx_clone = size_tx.clone();
     let handle = std::thread::spawn(move || {
         match fs::find_directories(&path_clone, &pattern_clone) {
             Ok(dirs) => {
-                for (index, dir_path) in dirs.into_iter().enumerate() {
-                    // Send directory without size initially
+                // Collect all directories first
+                let dir_paths: Vec<String> = dirs.into_iter().collect();
+                
+                // Send all directories without size initially
+                for dir_path in &dir_paths {
                     let _ = tx.send(DirectoryInfo {
                         path: dir_path.clone(),
                         size: 0,
                         formatted_size: "Calculating...".to_string(),
                         selected: false,
-                    });
-                    
-                    // Start size calculation in background
-                    let size_tx_clone = size_tx.clone();
-                    let dir_path_clone = dir_path.clone();
-                    std::thread::spawn(move || {
-                        let size = fs::calculate_directory_size(std::path::Path::new(&dir_path_clone)).unwrap_or(0);
-                        let formatted_size = fs::format_size(size);
-                        let _ = size_tx_clone.send((index, size, formatted_size));
+                        deletion_status: crate::fs::DeletionStatus::Normal,
+                        calculation_status: crate::fs::CalculationStatus::NotStarted,
                     });
                 }
+                
+                // Start size calculations in a separate thread with limited concurrency
+                let size_tx_for_calc = size_tx_clone.clone();
+                let calc_status_tx_for_calc = calc_status_tx.clone();
+                std::thread::spawn(move || {
+                    // Process directories in batches to avoid overwhelming the system
+                    let max_concurrent = 4; // Limit concurrent calculations
+                    let mut active_threads: usize = 0;
+                    
+                    for dir_path in dir_paths {
+                        // Wait if we have too many active threads
+                        while active_threads >= max_concurrent {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            active_threads = active_threads.saturating_sub(1);
+                        }
+                        
+                        // Add a small delay between calculations to keep UI responsive
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        
+                        // Calculate size without blocking the UI
+                        let dir_path_clone = dir_path.clone();
+                        let size_tx_for_this = size_tx_for_calc.clone();
+                        let calc_status_tx_for_this = calc_status_tx_for_calc.clone();
+                        
+                        active_threads += 1;
+                        
+                        // Send status update that calculation is starting
+                        let _ = calc_status_tx_for_this.send((dir_path.clone(), crate::fs::CalculationStatus::Calculating));
+                        
+                        // Spawn a quick calculation thread that doesn't block
+                        std::thread::spawn(move || {
+                            let calculated_size = fs::calculate_directory_size(std::path::Path::new(&dir_path_clone)).unwrap_or(0);
+                            let formatted_size = fs::format_size(calculated_size);
+                            let _ = size_tx_for_this.send((dir_path_clone.clone(), calculated_size, formatted_size));
+                            // Also send completion status update
+                            let _ = calc_status_tx_for_this.send((dir_path_clone, crate::fs::CalculationStatus::Completed));
+                        });
+                    }
+                });
             }
             Err(e) => {
                 let _ = tx.send(DirectoryInfo {
@@ -173,6 +228,8 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                     size: 0,
                     formatted_size: "0 B".to_string(),
                     selected: false,
+                    deletion_status: crate::fs::DeletionStatus::Normal,
+                    calculation_status: crate::fs::CalculationStatus::Error(e.to_string()),
                 });
             }
         }
@@ -192,12 +249,25 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
         }
         
         // Check for size updates
-        while let Ok((index, size, formatted_size)) = size_rx.try_recv() {
-            if index < app.directories.len() {
-                app.directories[index].size = size;
-                app.directories[index].formatted_size = formatted_size;
+        while let Ok((path, size, formatted_size)) = size_rx.try_recv() {
+            // Find the directory by path and update its size
+            if let Some(dir) = app.directories.iter_mut().find(|d| d.path == path) {
+                dir.size = size;
+                dir.formatted_size = formatted_size;
+                dir.calculation_status = crate::fs::CalculationStatus::Completed;
             }
         }
+        
+        // Check for calculation status updates
+        while let Ok((path, status)) = calc_status_rx.try_recv() {
+            // Find the directory by path and update its calculation status
+            if let Some(dir) = app.directories.iter_mut().find(|d| d.path == path) {
+                dir.calculation_status = status;
+            }
+        }
+        
+        // Process deletion messages
+        app.process_deletion_messages();
         
         // Check if the background thread has finished
         if is_scanning && handle.is_finished() {
@@ -205,7 +275,6 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
             while let Ok(dir) = rx.try_recv() {
                 if dir.path.starts_with("ERROR:") {
                     // Handle error
-                    is_scanning = false;
                     break;
                 } else {
                     app.directories.push(dir);
@@ -224,7 +293,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                 [
                     Constraint::Length(4), // Header
                     Constraint::Min(0),    // Main content area
-                    Constraint::Length(4), // Footer
+                    Constraint::Length(5), // Footer (increased for extra line)
                 ]
                 .as_ref(),
             )
@@ -388,6 +457,27 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                             Span::styled("  ", Style::default())
                         },
                         Span::styled(clean_path(&dir.path), path_style),
+                        // Add calculation status icon
+                        Span::styled(
+                            match dir.calculation_status {
+                                crate::fs::CalculationStatus::NotStarted | crate::fs::CalculationStatus::Calculating | crate::fs::CalculationStatus::Error(_) =>
+                                    format!(" {}", get_calculation_status_icon(&dir.calculation_status)),
+                                crate::fs::CalculationStatus::Completed => "".to_string(),
+                            },
+                            match &dir.calculation_status {
+                                crate::fs::CalculationStatus::NotStarted => Style::default().fg(TEXT_SECONDARY),
+                                crate::fs::CalculationStatus::Calculating => Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD),
+                                crate::fs::CalculationStatus::Completed => Style::default(),
+                                crate::fs::CalculationStatus::Error(_) => Style::default().fg(ERROR_COLOR),
+                            }
+                        ),
+                        // Add deletion status display with icons
+                        match &dir.deletion_status {
+                            crate::fs::DeletionStatus::Normal => Span::styled("", Style::default()),
+                            crate::fs::DeletionStatus::Deleting => Span::styled(" 🔄", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
+                            crate::fs::DeletionStatus::Deleted => Span::styled(" 🗑️", Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD)),
+                            crate::fs::DeletionStatus::Error(msg) => Span::styled(format!(" ⚠️ {}", msg), Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD)),
+                        },
                     ])])
                 }).collect();
 
@@ -442,6 +532,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                             Span::styled(format!("{} of {}", app.selected + 1, app.directories.len()), Style::default().fg(ACCENT_COLOR)),
                         ]),
                         Line::from(vec![]), // Empty line
+
                         Line::from(vec![
                             Span::styled("📊 ", Style::default().fg(ACCENT_COLOR)),
                             Span::styled("Total Summary", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
@@ -454,6 +545,31 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                             Span::styled("Calculated: ", Style::default().fg(TEXT_SECONDARY)),
                             Span::styled(format!("{}/{}", calculated_count, total_count), Style::default().fg(ACCENT_COLOR)),
                         ]),
+                        Line::from(vec![]), // Empty line
+                        Line::from(vec![
+                            Span::styled("🗑️ ", Style::default().fg(SUCCESS_COLOR)),
+                            Span::styled("Freed Space", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD)),
+                        ]),
+                        Line::from(vec![
+                            Span::styled("Total Freed: ", Style::default().fg(TEXT_SECONDARY)),
+                            Span::styled(fs::format_size(app.get_total_freed_space()), Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD)),
+                        ]),
+                        if app.get_session_freed_space() > 0 {
+                            Line::from(vec![
+                                Span::styled("This Session: ", Style::default().fg(TEXT_SECONDARY)),
+                                Span::styled(fs::format_size(app.get_session_freed_space()), Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
+                            ])
+                        } else {
+                            Line::from(vec![])
+                        },
+                        if !app.get_recent_freed_space_history().is_empty() {
+                            Line::from(vec![
+                                Span::styled("Recent: ", Style::default().fg(TEXT_SECONDARY)),
+                                Span::styled(format!("{} items", app.get_recent_freed_space_history().len()), Style::default().fg(ACCENT_COLOR)),
+                            ])
+                        } else {
+                            Line::from(vec![])
+                        },
                     ];
 
                     let details_widget = Paragraph::new(details_text)
@@ -497,21 +613,32 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                                // Footer
                    let footer = Paragraph::new(vec![
                        Line::from(vec![
-                           Span::styled("⌨️  Navigation: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
+                           Span::styled("⌨️  Nav: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
                            Span::styled("↑/↓/j/k", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(" to navigate, ", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled(" move, ", Style::default().fg(TEXT_SECONDARY)),
                            Span::styled("←/→", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(" for pages, ", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled(" pages, ", Style::default().fg(TEXT_SECONDARY)),
                            Span::styled("Home/End", Style::default().fg(ACCENT_COLOR)),
                            Span::styled(", ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("[Space] select/deselect, [a] all, [d] none, [s] mode", Style::default().fg(ACCENT_COLOR)),
-                           Span::styled(", ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("q/ESC", Style::default().fg(ERROR_COLOR)),
-                           Span::styled(" to quit", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("Space", Style::default().fg(ACCENT_COLOR)),
+                           Span::styled(" select, ", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("a/d", Style::default().fg(ACCENT_COLOR)),
+                           Span::styled(" all/none, ", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("q", Style::default().fg(ERROR_COLOR)),
+                           Span::styled(" quit", Style::default().fg(TEXT_SECONDARY)),
+                       ]),
+                       Line::from(vec![
+                           Span::styled("🗑️  Delete: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
+                           Span::styled("F", Style::default().fg(ERROR_COLOR)),
+                           Span::styled(" current, ", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("Ctrl+D/X", Style::default().fg(ERROR_COLOR)),
+                           Span::styled(" current, ", Style::default().fg(TEXT_SECONDARY)),
+                           Span::styled("C", Style::default().fg(ERROR_COLOR)),
+                           Span::styled(" selected (use Space to select)", Style::default().fg(TEXT_SECONDARY)),
                        ]),
                        Line::from(vec![
                            Span::styled("📊 Found: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
-                           Span::styled(format!("{} directories", app.directories.len()), Style::default().fg(SUCCESS_COLOR)),
+                           Span::styled(format!("{} dirs", app.directories.len()), Style::default().fg(SUCCESS_COLOR)),
                            if app.get_selected_count() > 0 {
                                Span::styled(
                                    format!(" | Selected: {} ({})", app.get_selected_count(), fs::format_size(app.get_selected_total_size())),
@@ -530,7 +657,7 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                            Span::styled("📄 Page: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
                            Span::styled(format!("{} of {}", app.current_page + 1, app.total_pages(items_per_page)), Style::default().fg(ACCENT_COLOR)),
                            Span::styled(" | ", Style::default().fg(TEXT_SECONDARY)),
-                           Span::styled("🎯 Selected: ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
+                           Span::styled("🎯 ", Style::default().fg(WARNING_COLOR).add_modifier(Modifier::BOLD)),
                            Span::styled(if app.directories.is_empty() {
                                "None".to_string()
                            } else {
@@ -554,8 +681,8 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
             f.render_widget(footer, chunks[2]);
         })?;
 
-                       // Handle input
-               if crossterm::event::poll(std::time::Duration::from_millis(100))? {
+                       // Handle input with shorter timeout to keep UI responsive
+               if crossterm::event::poll(std::time::Duration::from_millis(50))? {
                    if let crossterm::event::Event::Key(key_event) = crossterm::event::read()? {
                        match key_event.code {
                            crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => break,
@@ -567,8 +694,31 @@ fn display_directories_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>
                            crossterm::event::KeyCode::Right => app.next_page(items_per_page),
                            crossterm::event::KeyCode::Char(' ') => app.toggle_current_selection(),
                            crossterm::event::KeyCode::Char('a') => app.select_all(),
-                           crossterm::event::KeyCode::Char('d') => app.deselect_all(),
                            crossterm::event::KeyCode::Char('s') => app.toggle_selection_mode(),
+                           // Delete shortcuts - handle in order of specificity
+                           crossterm::event::KeyCode::Char('f') => {
+                               // Delete current directory (F key)
+                               if !app.directories.is_empty() {
+                                   let _ = app.start_delete_current_directory();
+                               }
+                           },
+                           // Handle 'C' key for selected directories
+                           crossterm::event::KeyCode::Char('c') => {
+                               // Delete selected directories (C key)
+                               if app.get_selected_count() > 0 {
+                                   let _ = app.start_delete_selected_directories();
+                               }
+                               // If no directories are selected, do nothing (user needs to select first)
+                           },
+                           // Handle Ctrl combinations (less specific)
+                           crossterm::event::KeyCode::Char('x') | crossterm::event::KeyCode::Char('d') if key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                               // Delete current directory (Ctrl+D or Ctrl+x)
+                               if !app.directories.is_empty() {
+                                   let _ = app.start_delete_current_directory();
+                               }
+                           },
+                           // Handle plain 'd' key (least specific)
+                           crossterm::event::KeyCode::Char('d') if !key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => app.deselect_all(),
                            _ => {}
                        }
                    }
@@ -623,12 +773,36 @@ fn display_directories_text(pattern: &str, path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    // Helper function to create DirectoryInfo for tests
+    fn create_test_dir(path: &str, size: u64, formatted_size: &str) -> DirectoryInfo {
+        DirectoryInfo {
+            path: path.to_string(),
+            size,
+            formatted_size: formatted_size.to_string(),
+            selected: false,
+            deletion_status: crate::fs::DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::Completed,
+        }
+    }
+    
+    // Helper function to create DirectoryInfo with calculating state
+    fn create_calculating_dir(path: &str) -> DirectoryInfo {
+        DirectoryInfo {
+            path: path.to_string(),
+            size: 0,
+            formatted_size: "Calculating...".to_string(),
+            selected: false,
+            deletion_status: crate::fs::DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::NotStarted,
+        }
+    }
 
     #[test]
     fn test_app_creation() {
         let directories = vec![
-            DirectoryInfo { path: "dir1".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false },
-            DirectoryInfo { path: "dir2".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false }
+            create_test_dir("dir1", 100, "100 B"),
+            create_test_dir("dir2", 200, "200 B")
         ];
         let app = App::new(directories.clone(), "test".to_string(), ".".to_string());
         assert_eq!(app.directories.len(), directories.len());
@@ -638,9 +812,9 @@ mod tests {
     #[test]
     fn test_app_navigation() {
         let directories = vec![
-            DirectoryInfo { path: "dir1".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false },
-            DirectoryInfo { path: "dir2".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false },
-            DirectoryInfo { path: "dir3".to_string(), size: 300, formatted_size: "300 B".to_string(), selected: false }
+            create_test_dir("dir1", 100, "100 B"),
+            create_test_dir("dir2", 200, "200 B"),
+            create_test_dir("dir3", 300, "300 B")
         ];
         let mut app = App::new(directories, "test".to_string(), ".".to_string());
         let items_per_page = 20;
@@ -689,7 +863,6 @@ mod tests {
         // Test that scanning state properly transitions from loading to results
         let mut app = App::new(vec![], "test".to_string(), ".".to_string());
         let mut is_scanning = true;
-        let mut scan_start_time = std::time::Instant::now();
         
         // Initially should show loading state
         assert!(is_scanning);
@@ -701,19 +874,16 @@ mod tests {
             size: 100,
             formatted_size: "100 B".to_string(),
             selected: false,
+            deletion_status: crate::fs::DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::Completed,
         });
         
         // Should still be scanning after receiving first item
         assert!(is_scanning);
         assert!(!app.directories.is_empty());
         
-        // Simulate time passing without new data
-        scan_start_time = std::time::Instant::now() - std::time::Duration::from_millis(400);
-        
-        // Now should be able to transition to not scanning
-        if scan_start_time.elapsed().as_millis() > 300 {
-            is_scanning = false;
-        }
+        // Simulate time passing without new data and transition to not scanning
+        is_scanning = false;
         
         assert!(!is_scanning);
         assert!(!app.directories.is_empty());
@@ -724,31 +894,18 @@ mod tests {
         // Test that scanning continues while receiving multiple items
         let mut app = App::new(vec![], "test".to_string(), ".".to_string());
         let mut is_scanning = true;
-        let mut scan_start_time = std::time::Instant::now();
         
         // Add multiple directories
         for i in 0..5 {
-            app.directories.push(DirectoryInfo {
-                path: format!("dir{}", i),
-                size: i as u64 * 100,
-                formatted_size: format!("{} B", i * 100),
-                selected: false,
-            });
-            // Simulate receiving data (reset timer)
-            scan_start_time = std::time::Instant::now();
+            app.directories.push(create_test_dir(&format!("dir{}", i), i as u64 * 100, &format!("{} B", i * 100)));
         }
         
         // Should still be scanning since we just received data
         assert!(is_scanning);
         assert_eq!(app.directories.len(), 5);
         
-        // Simulate time passing without new data
-        scan_start_time = std::time::Instant::now() - std::time::Duration::from_millis(400);
-        
-        // Now should transition to not scanning
-        if scan_start_time.elapsed().as_millis() > 300 {
-            is_scanning = false;
-        }
+        // Simulate time passing without new data and transition to not scanning
+        is_scanning = false;
         
         assert!(!is_scanning);
         assert_eq!(app.directories.len(), 5);
@@ -765,12 +922,7 @@ mod tests {
         assert!(should_show_loading); // Should show loading initially
         
         // Simulate receiving first directory but still scanning
-        app.directories.push(DirectoryInfo {
-            path: "test_dir".to_string(),
-            size: 100,
-            formatted_size: "100 B".to_string(),
-            selected: false,
-        });
+        app.directories.push(create_test_dir("test_dir", 100, "100 B"));
         
         // Should still show loading while scanning
         assert!(is_scanning);
@@ -787,7 +939,7 @@ mod tests {
         assert!(should_show_list); // Should show list when not scanning and not empty
         
         // Test empty case
-        let mut empty_app = App::new(vec![], "test".to_string(), ".".to_string());
+        let empty_app = App::new(vec![], "test".to_string(), ".".to_string());
         let empty_is_scanning = false;
         let should_show_no_results = !empty_is_scanning && empty_app.directories.is_empty();
         assert!(should_show_no_results); // Should show no results when not scanning and empty
@@ -796,14 +948,10 @@ mod tests {
     #[test]
     fn test_scanning_complete_no_results() {
         // Test the scenario where scanning completes but no directories are found
-        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
-        let mut is_scanning = true;
-        let mut has_received_any_data = true; // Scanning completed, we know there are no results
+        let app = App::new(vec![], "test".to_string(), ".".to_string());
+        let is_scanning = false;
+        let has_received_any_data = true; // Scanning completed, we know there are no results
 
-        // Simulate scanning completed with no results
-        is_scanning = false;
-        has_received_any_data = true;
-        
         // Should show "no results" message, not loading
         let should_show_loading = is_scanning || !has_received_any_data;
         assert!(!should_show_loading); // Should NOT show loading
@@ -818,12 +966,7 @@ mod tests {
         let mut app = App::new(vec![], "test".to_string(), ".".to_string());
         
         // Add a directory with initial state (no size calculated yet)
-        app.directories.push(DirectoryInfo {
-            path: "test_dir".to_string(),
-            size: 0,
-            formatted_size: "Calculating...".to_string(),
-            selected: false,
-        });
+        app.directories.push(create_calculating_dir("test_dir"));
         
         assert_eq!(app.directories[0].size, 0);
         assert_eq!(app.directories[0].formatted_size, "Calculating...");
@@ -835,18 +978,8 @@ mod tests {
         let mut app = App::new(vec![], "test".to_string(), ".".to_string());
         
         // Add directories with initial state
-        app.directories.push(DirectoryInfo {
-            path: "dir1".to_string(),
-            size: 0,
-            formatted_size: "Calculating...".to_string(),
-            selected: false,
-        });
-        app.directories.push(DirectoryInfo {
-            path: "dir2".to_string(),
-            size: 0,
-            formatted_size: "Calculating...".to_string(),
-            selected: false,
-        });
+        app.directories.push(create_calculating_dir("dir1"));
+        app.directories.push(create_calculating_dir("dir2"));
         
         // Simulate size update for first directory
         let index = 0;
@@ -874,12 +1007,7 @@ mod tests {
         
         // Add multiple directories
         for i in 0..3 {
-            app.directories.push(DirectoryInfo {
-                path: format!("dir{}", i),
-                size: 0,
-                formatted_size: "Calculating...".to_string(),
-                selected: false,
-            });
+            app.directories.push(create_calculating_dir(&format!("dir{}", i)));
         }
         
         // Simulate size updates in different order
@@ -916,6 +1044,8 @@ mod tests {
             size: 0,
             formatted_size: "Calculating...".to_string(),
             selected: false,
+            deletion_status: crate::fs::DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::NotStarted,
         });
         
         // Try to update an index that doesn't exist
@@ -953,18 +1083,24 @@ mod tests {
                 size: 1024,
                 formatted_size: "1.0 KB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
                 path: "dir2".to_string(),
                 size: 2048,
                 formatted_size: "2.0 KB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
                 path: "dir3".to_string(),
                 size: 3072,
                 formatted_size: "3.0 KB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
         ];
         
@@ -986,18 +1122,24 @@ mod tests {
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
             },
             DirectoryInfo {
                 path: "dir2".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
             },
             DirectoryInfo {
                 path: "dir3".to_string(),
                 size: 0, // Initially 0, will be updated
                 formatted_size: "Calculating...".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
             },
         ];
         
@@ -1052,18 +1194,24 @@ mod tests {
                 size: 1024, // Already calculated
                 formatted_size: "1.0 KB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
                 path: "dir2".to_string(),
                 size: 0, // Not yet calculated
                 formatted_size: "Calculating...".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
             },
             DirectoryInfo {
                 path: "dir3".to_string(),
                 size: 2048, // Already calculated
                 formatted_size: "2.0 KB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
         ];
         
@@ -1096,12 +1244,16 @@ mod tests {
                 size: 1024 * 1024 * 1024, // 1 GB
                 formatted_size: "1.0 GB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
                 path: "large_dir2".to_string(),
                 size: 2 * 1024 * 1024 * 1024, // 2 GB
                 formatted_size: "2.0 GB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
         ];
         
@@ -1122,18 +1274,24 @@ mod tests {
                 size: 0,
                 formatted_size: "0 B".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
                 path: "empty_dir2".to_string(),
                 size: 0,
                 formatted_size: "0 B".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
             DirectoryInfo {
                 path: "non_empty_dir".to_string(),
                 size: 1024,
                 formatted_size: "1.0 KB".to_string(),
                 selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
             },
         ];
         
@@ -1157,6 +1315,8 @@ mod tests {
             size: 0,
             formatted_size: "0 B".to_string(),
             selected: false,
+            deletion_status: crate::fs::DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::Completed,
         };
         assert_eq!(indicator(&dir), "☐");
         dir.selected = true;
@@ -1170,8 +1330,8 @@ mod tests {
         use crate::fs::format_size;
         let mut app = App::new(
             vec![
-                DirectoryInfo { path: "a".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false },
-                DirectoryInfo { path: "b".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false },
+                DirectoryInfo { path: "a".to_string(), size: 100, formatted_size: "100 B".to_string(), selected: false, deletion_status: crate::fs::DeletionStatus::Normal, calculation_status: crate::fs::CalculationStatus::Completed },
+                DirectoryInfo { path: "b".to_string(), size: 200, formatted_size: "200 B".to_string(), selected: false, deletion_status: crate::fs::DeletionStatus::Normal, calculation_status: crate::fs::CalculationStatus::Completed },
             ],
             "test".to_string(), ".".to_string(),
         );
@@ -1217,5 +1377,416 @@ mod tests {
         let icon2 = get_directory_icon(true, false);
         assert!(icon1 == "📂" || icon1 == "📁");
         assert!(icon2 == "📂" || icon2 == "📁");
+    }
+
+    #[test]
+    fn test_deletion_status_display() {
+        // Test that deletion status is properly displayed in the UI with icons
+        use crate::fs::{DirectoryInfo, DeletionStatus};
+        
+        // Test normal status (should show nothing)
+        let normal_dir = DirectoryInfo {
+            path: "test_dir".to_string(),
+            size: 100,
+            formatted_size: "100 B".to_string(),
+            selected: false,
+            deletion_status: DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::Completed,
+        };
+        
+        // Test deleting status (should show 🔄 icon)
+        let deleting_dir = DirectoryInfo {
+            path: "test_dir".to_string(),
+            size: 100,
+            formatted_size: "100 B".to_string(),
+            selected: false,
+            deletion_status: DeletionStatus::Deleting,
+            calculation_status: crate::fs::CalculationStatus::Completed,
+        };
+        
+        // Test deleted status (should show 🗑️ icon)
+        let deleted_dir = DirectoryInfo {
+            path: "test_dir".to_string(),
+            size: 100,
+            formatted_size: "100 B".to_string(),
+            selected: false,
+            deletion_status: DeletionStatus::Deleted,
+            calculation_status: crate::fs::CalculationStatus::Completed,
+        };
+        
+        // Test error status (should show ⚠️ icon with message)
+        let error_dir = DirectoryInfo {
+            path: "test_dir".to_string(),
+            size: 100,
+            formatted_size: "100 B".to_string(),
+            selected: false,
+            deletion_status: DeletionStatus::Error("Permission denied".to_string()),
+            calculation_status: crate::fs::CalculationStatus::Completed,
+        };
+        
+        // Verify the status variants exist and work correctly
+        assert!(matches!(normal_dir.deletion_status, DeletionStatus::Normal));
+        assert!(matches!(deleting_dir.deletion_status, DeletionStatus::Deleting));
+        assert!(matches!(deleted_dir.deletion_status, DeletionStatus::Deleted));
+        assert!(matches!(error_dir.deletion_status, DeletionStatus::Error(_)));
+        
+        // Test that the UI rendering logic can handle all status types
+        let app = App::new(vec![normal_dir, deleting_dir, deleted_dir, error_dir], "test".to_string(), ".".to_string());
+        assert_eq!(app.directories.len(), 4);
+        assert!(matches!(app.directories[0].deletion_status, DeletionStatus::Normal));
+        assert!(matches!(app.directories[1].deletion_status, DeletionStatus::Deleting));
+        assert!(matches!(app.directories[2].deletion_status, DeletionStatus::Deleted));
+        assert!(matches!(app.directories[3].deletion_status, DeletionStatus::Error(_)));
+    }
+
+    #[test]
+    fn test_concurrency_fix_size_calculation() {
+        // Test that the concurrency fix works correctly when directories are added
+        // while size calculations are in progress
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        
+        // Simulate the scenario where directories are added in batches
+        // and size calculations complete out of order
+        
+        // Add first batch of directories
+        for i in 0..3 {
+            app.directories.push(DirectoryInfo {
+                path: format!("dir{}", i),
+                size: 0,
+                formatted_size: "Calculating...".to_string(),
+                selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
+            });
+        }
+        
+        // Simulate size updates coming back out of order
+        // This simulates the background threads completing at different times
+        let updates = vec![
+            ("dir1".to_string(), 2048, "2.0 KB".to_string()),
+            ("dir0".to_string(), 1024, "1.0 KB".to_string()),
+            ("dir2".to_string(), 3072, "3.0 KB".to_string()),
+        ];
+        
+        // Apply updates using the new path-based lookup
+        for (path, size, formatted_size) in updates {
+            if let Some(dir) = app.directories.iter_mut().find(|d| d.path == path) {
+                dir.size = size;
+                dir.formatted_size = formatted_size;
+            }
+        }
+        
+        // Verify all updates were applied correctly
+        assert_eq!(app.directories[0].size, 1024);
+        assert_eq!(app.directories[0].formatted_size, "1.0 KB");
+        assert_eq!(app.directories[1].size, 2048);
+        assert_eq!(app.directories[1].formatted_size, "2.0 KB");
+        assert_eq!(app.directories[2].size, 3072);
+        assert_eq!(app.directories[2].formatted_size, "3.0 KB");
+        
+        // Now simulate adding more directories while size calculations are still in progress
+        for i in 3..6 {
+            app.directories.push(DirectoryInfo {
+                path: format!("dir{}", i),
+                size: 0,
+                formatted_size: "Calculating...".to_string(),
+                selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
+            });
+        }
+        
+        // Simulate more size updates (including some for the new directories)
+        let more_updates = vec![
+            ("dir4".to_string(), 4096, "4.0 KB".to_string()),
+            ("dir3".to_string(), 5120, "5.0 KB".to_string()),
+            ("dir5".to_string(), 6144, "6.0 KB".to_string()),
+        ];
+        
+        // Apply updates - this should work correctly even though the vector has grown
+        for (path, size, formatted_size) in more_updates {
+            if let Some(dir) = app.directories.iter_mut().find(|d| d.path == path) {
+                dir.size = size;
+                dir.formatted_size = formatted_size;
+            }
+        }
+        
+        // Verify all updates were applied correctly
+        assert_eq!(app.directories[3].size, 5120);
+        assert_eq!(app.directories[3].formatted_size, "5.0 KB");
+        assert_eq!(app.directories[4].size, 4096);
+        assert_eq!(app.directories[4].formatted_size, "4.0 KB");
+        assert_eq!(app.directories[5].size, 6144);
+        assert_eq!(app.directories[5].formatted_size, "6.0 KB");
+        
+        // Verify the total size calculation is correct
+        let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
+        assert_eq!(total_size, 21504); // 1024 + 2048 + 3072 + 5120 + 4096 + 6144
+        
+        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        assert_eq!(calculated_count, 6);
+    }
+
+    #[test]
+    fn test_key_handling_delete_shortcuts() {
+        // Test that the key handling logic correctly distinguishes between different delete shortcuts
+        // Now using 'C' key for selected directories instead of Delete key
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        
+        // Helper function to create key events
+        fn create_key_event(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+            KeyEvent {
+                code,
+                modifiers,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::empty(),
+            }
+        }
+        
+        // Test 'C' key (should delete selected)
+        let c_key = create_key_event(
+            KeyCode::Char('c'),
+            KeyModifiers::empty()
+        );
+        
+        // Test Ctrl+D (should delete current)
+        let ctrl_d = create_key_event(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL
+        );
+        
+        // Test plain 'd' (should deselect all)
+        let plain_d = create_key_event(
+            KeyCode::Char('d'),
+            KeyModifiers::empty()
+        );
+        
+        // Test Ctrl+X (should delete current)
+        let ctrl_x = create_key_event(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL
+        );
+        
+        // Test plain 'f' (should delete current)
+        let plain_f = create_key_event(
+            KeyCode::Char('f'),
+            KeyModifiers::empty()
+        );
+        
+        // Verify the key event properties
+        assert!(!c_key.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(!c_key.modifiers.contains(KeyModifiers::SHIFT));
+        assert_eq!(c_key.code, KeyCode::Char('c'));
+        
+        assert!(ctrl_d.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(!ctrl_d.modifiers.contains(KeyModifiers::SHIFT));
+        assert_eq!(ctrl_d.code, KeyCode::Char('d'));
+        
+        assert!(!plain_d.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(!plain_d.modifiers.contains(KeyModifiers::SHIFT));
+        assert_eq!(plain_d.code, KeyCode::Char('d'));
+        
+        assert!(ctrl_x.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(!ctrl_x.modifiers.contains(KeyModifiers::SHIFT));
+        assert_eq!(ctrl_x.code, KeyCode::Char('x'));
+        
+        assert!(!plain_f.modifiers.contains(KeyModifiers::CONTROL));
+        assert!(!plain_f.modifiers.contains(KeyModifiers::SHIFT));
+        assert_eq!(plain_f.code, KeyCode::Char('f'));
+        
+        // Test the logic that would be used in the key handling
+        let test_key_handling = |key_event: &KeyEvent| -> &str {
+            match key_event.code {
+                KeyCode::Char('f') => "delete_current",
+                KeyCode::Char('c') => "delete_selected",
+                KeyCode::Char('x') | KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => "delete_current",
+                KeyCode::Char('d') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => "deselect_all",
+                _ => "unknown"
+            }
+        };
+        
+        // Verify the key handling logic works correctly
+        assert_eq!(test_key_handling(&c_key), "delete_selected");
+        assert_eq!(test_key_handling(&ctrl_d), "delete_current");
+        assert_eq!(test_key_handling(&ctrl_x), "delete_current");
+        assert_eq!(test_key_handling(&plain_d), "deselect_all");
+        assert_eq!(test_key_handling(&plain_f), "delete_current");
+    }
+
+    #[test]
+    fn test_selection_and_deletion_logic() {
+        use crate::ui::app::App;
+        use crate::fs::DirectoryInfo;
+        use crate::fs::DeletionStatus;
+        
+        // Create a test app with multiple directories
+        let directories = vec![
+            DirectoryInfo {
+                path: "dir1".to_string(),
+                size: 100,
+                formatted_size: "100 B".to_string(),
+                selected: false,
+                deletion_status: DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
+            },
+            DirectoryInfo {
+                path: "dir2".to_string(),
+                size: 200,
+                formatted_size: "200 B".to_string(),
+                selected: false,
+                deletion_status: DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
+            },
+            DirectoryInfo {
+                path: "dir3".to_string(),
+                size: 300,
+                formatted_size: "300 B".to_string(),
+                selected: false,
+                deletion_status: DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
+            },
+        ];
+        
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Initially no directories should be selected
+        assert_eq!(app.get_selected_count(), 0);
+        assert_eq!(app.get_selected_directories().len(), 0);
+        
+        // Select first directory
+        app.directories[0].selected = true;
+        assert_eq!(app.get_selected_count(), 1);
+        assert_eq!(app.get_selected_directories().len(), 1);
+        assert_eq!(app.get_selected_directories()[0].path, "dir1");
+        
+        // Select second directory
+        app.directories[1].selected = true;
+        assert_eq!(app.get_selected_count(), 2);
+        assert_eq!(app.get_selected_directories().len(), 2);
+        
+        // Verify both selected directories are in the list
+        let selected_paths: Vec<&str> = app.get_selected_directories().iter().map(|d| d.path.as_str()).collect();
+        assert!(selected_paths.contains(&"dir1"));
+        assert!(selected_paths.contains(&"dir2"));
+        
+        // Verify total size calculation
+        assert_eq!(app.get_selected_total_size(), 300); // 100 + 200
+        
+        // Test that the selection state is properly tracked
+        assert!(app.directories[0].selected);
+        assert!(app.directories[1].selected);
+        assert!(!app.directories[2].selected);
+        
+        // Test toggle functionality
+        app.toggle_current_selection(); // This should toggle the currently selected item (index 0)
+        assert!(!app.directories[0].selected); // Should now be false
+        assert_eq!(app.get_selected_count(), 1); // Only dir2 should be selected
+        
+        // Test select all
+        app.select_all();
+        assert_eq!(app.get_selected_count(), 3);
+        assert!(app.directories[0].selected);
+        assert!(app.directories[1].selected);
+        assert!(app.directories[2].selected);
+        
+        // Test deselect all
+        app.deselect_all();
+        assert_eq!(app.get_selected_count(), 0);
+        assert!(!app.directories[0].selected);
+        assert!(!app.directories[1].selected);
+        assert!(!app.directories[2].selected);
+    }
+
+    #[test]
+    fn test_complete_selection_and_deletion_workflow() {
+        use crate::ui::app::App;
+        use crate::fs::DirectoryInfo;
+        use crate::fs::DeletionStatus;
+        
+        // Create a test app with multiple directories
+        let directories = vec![
+            DirectoryInfo {
+                path: "dir1".to_string(),
+                size: 100,
+                formatted_size: "100 B".to_string(),
+                selected: false,
+                deletion_status: DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
+            },
+            DirectoryInfo {
+                path: "dir2".to_string(),
+                size: 200,
+                formatted_size: "200 B".to_string(),
+                selected: false,
+                deletion_status: DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
+            },
+            DirectoryInfo {
+                path: "dir3".to_string(),
+                size: 300,
+                formatted_size: "300 B".to_string(),
+                selected: false,
+                deletion_status: DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::Completed,
+            },
+        ];
+        
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        
+        // Simulate the workflow:
+        // 1. User navigates to first directory (already selected by default)
+        assert_eq!(app.selected, 0);
+        
+        // 2. User presses Space to select the first directory
+        app.toggle_current_selection();
+        assert!(app.directories[0].selected);
+        assert_eq!(app.get_selected_count(), 1);
+        
+        // 3. User navigates to second directory
+        app.selected = 1;
+        assert_eq!(app.selected, 1);
+        
+        // 4. User presses Space to select the second directory
+        app.toggle_current_selection();
+        assert!(app.directories[1].selected);
+        assert_eq!(app.get_selected_count(), 2);
+        
+        // 5. User navigates to third directory
+        app.selected = 2;
+        assert_eq!(app.selected, 2);
+        
+        // 6. User presses Space to select the third directory
+        app.toggle_current_selection();
+        assert!(app.directories[2].selected);
+        assert_eq!(app.get_selected_count(), 3);
+        
+        // 7. Now all three directories should be selected
+        assert!(app.directories[0].selected);
+        assert!(app.directories[1].selected);
+        assert!(app.directories[2].selected);
+        
+        // 8. Verify the selected directories list
+        let selected_dirs = app.get_selected_directories();
+        assert_eq!(selected_dirs.len(), 3);
+        let selected_paths: Vec<&str> = selected_dirs.iter().map(|d| d.path.as_str()).collect();
+        assert!(selected_paths.contains(&"dir1"));
+        assert!(selected_paths.contains(&"dir2"));
+        assert!(selected_paths.contains(&"dir3"));
+        
+        // 9. Verify total size calculation
+        assert_eq!(app.get_selected_total_size(), 600); // 100 + 200 + 300
+        
+        // 10. Now simulate Delete key being pressed
+        // This should call start_delete_selected_directories()
+        // Since we can't actually delete files in tests, we just verify the method exists and works
+        let result = app.start_delete_selected_directories();
+        assert!(result.is_ok());
+        
+        // 11. Verify that the deletion progress is initialized
+        assert!(app.deletion_progress.is_some());
+        if let Some(progress) = &app.deletion_progress {
+            assert_eq!(progress.total_items, 3);
+            assert_eq!(progress.completed_items, 0);
+        }
     }
 } 

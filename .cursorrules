@@ -83,6 +83,18 @@ pub struct DirectoryInfo {
 }
 ```
 
+### Delete Operations
+```rust
+// Safe directory deletion with state management
+pub fn delete_current_directory(&mut self) -> Result<String, std::io::Error> {
+    // Delete single directory and update state
+}
+
+pub fn delete_selected_directories(&mut self) -> Result<Vec<String>, std::io::Error> {
+    // Delete multiple directories and update state
+}
+```
+
 ## Performance Considerations
 
 ### Real-time UI
@@ -107,7 +119,7 @@ pub struct DirectoryInfo {
 
 ### Interaction Design
 - Keyboard-first navigation
-- Intuitive shortcuts (Space, A, D, S)
+- Intuitive shortcuts (Space, A, D, S, F/x/Ctrl+D, X/Ctrl+Shift+D)
 - Real-time feedback for all actions
 - Graceful error handling and recovery
 
@@ -197,7 +209,7 @@ pub fn some_operation() -> Result<()> {
 ```
 
 ## Success Metrics
-- 77+ tests passing (100% success rate)
+- 82+ tests passing (100% success rate)
 - Real-time UI responsiveness (60fps target)
 - Beautiful and intuitive user interface
 - Comprehensive error handling
