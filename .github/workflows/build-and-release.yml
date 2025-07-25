@@ -232,13 +232,13 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=v$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Delete existing tag if it exists
+      - name: Create and push tag
         run: |
           TAG="${{ steps.get_version.outputs.tag }}"
-          if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
-            echo "Tag $TAG already exists, deleting it..."
-            git push origin --delete "$TAG" || true
-          fi
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag -f "$TAG"
+          git push origin "$TAG" --force
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -254,11 +254,14 @@ jobs:
             cp "$file" release-assets/
           done
 
-      - name: Create or update release
-        uses: softprops/action-gh-release@v1
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.get_version.outputs.tag }}
-          name: Release ${{ steps.get_version.outputs.version }}
+          release_name: Release ${{ steps.get_version.outputs.version }}
           body: |
             ## dir-kill ${{ steps.get_version.outputs.version }}
             
@@ -276,8 +279,16 @@ jobs:
             
             ### Verification
             Verify the download integrity using the provided SHA256 checksums.
-          files: release-assets/*
           draft: false
           prerelease: false
+
+      - name: Upload Release Assets
+        run: |
+          for file in release-assets/*; do
+            if [ -f "$file" ]; then
+              echo "Uploading $file..."
+              gh release upload ${{ steps.get_version.outputs.tag }} "$file" --clobber
+            fi
+          done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
