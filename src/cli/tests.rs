@@ -11,10 +11,11 @@ fn test_cli_creation() {
 fn test_ls_command_exists() {
     // Test that ls command exists and has correct name
     let cmd = Cli::command();
-    let ls_cmd = cmd.get_subcommands()
+    let ls_cmd = cmd
+        .get_subcommands()
         .find(|cmd| cmd.get_name() == "ls")
         .unwrap();
-    
+
     assert_eq!(ls_cmd.get_name(), "ls");
 }
 
@@ -23,7 +24,7 @@ fn test_ls_default_arguments() {
     // Test ls command with default arguments
     let args = vec!["dir-kill", "ls", "test_pattern"];
     let cli = Cli::try_parse_from(args).unwrap();
-    
+
     match cli.command {
         Commands::Ls { pattern, path } => {
             assert_eq!(pattern, "test_pattern");
@@ -37,7 +38,7 @@ fn test_ls_with_path() {
     // Test ls command with custom path
     let args = vec!["dir-kill", "ls", "test_pattern", "/tmp"];
     let cli = Cli::try_parse_from(args).unwrap();
-    
+
     match cli.command {
         Commands::Ls { pattern, path } => {
             assert_eq!(pattern, "test_pattern");
@@ -45,8 +46,6 @@ fn test_ls_with_path() {
         }
     }
 }
-
-
 
 #[test]
 fn test_invalid_command() {
@@ -85,7 +84,7 @@ fn test_ls_with_pattern() {
     // Test ls command with pattern argument
     let args = vec!["dir-kill", "ls", "node_modules"];
     let cli = Cli::try_parse_from(args).unwrap();
-    
+
     match cli.command {
         Commands::Ls { path, pattern } => {
             assert_eq!(path, ".");
@@ -99,11 +98,11 @@ fn test_ls_with_short_pattern() {
     // Test ls command with pattern argument
     let args = vec!["dir-kill", "ls", "src"];
     let cli = Cli::try_parse_from(args).unwrap();
-    
+
     match cli.command {
         Commands::Ls { path, pattern } => {
             assert_eq!(path, ".");
             assert_eq!(pattern, "src");
         }
     }
-} 
+}

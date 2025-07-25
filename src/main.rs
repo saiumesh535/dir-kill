@@ -6,7 +6,7 @@ use anyhow::Result;
 
 fn main() -> Result<()> {
     if let Err(e) = cli::run() {
-        eprintln!("Error: {:#}", e);
+        eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
     Ok(())

@@ -1,0 +1,193 @@
+name: Build, Test, and Release
+
+on:
+  push:
+    branches: [ master, main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master, main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, beta, nightly]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          override: true
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Run clippy
+        run: |
+          rustup component add clippy
+          cargo clippy -- -D warnings
+
+      - name: Check formatting
+        run: |
+          rustup component add rustfmt
+          cargo fmt -- --check
+
+  build:
+    name: Build for ${{ matrix.os }}
+    needs: [test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: dir-kill-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: dir-kill-windows-x86_64.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: dir-kill-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: dir-kill-macos-aarch64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          # Strip debug symbols to reduce binary size (except on Windows)
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            strip target/${{ matrix.target }}/release/dir-kill
+          fi
+
+      - name: Create release directory
+        run: mkdir -p release
+
+      - name: Copy binary to release directory
+        run: |
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            cp target/${{ matrix.target }}/release/dir-kill.exe release/${{ matrix.artifact_name }}
+          else
+            cp target/${{ matrix.target }}/release/dir-kill release/${{ matrix.artifact_name }}
+          fi
+
+      - name: Create checksum
+        run: |
+          cd release
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            certutil -hashfile ${{ matrix.artifact_name }} SHA256 > ${{ matrix.artifact_name }}.sha256
+          else
+            sha256sum ${{ matrix.artifact_name }} > ${{ matrix.artifact_name }}.sha256
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            release/${{ matrix.artifact_name }}
+            release/${{ matrix.artifact_name }}.sha256
+
+  release:
+    name: Create Release
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from Cargo.toml
+        id: get_version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | cut -d '"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Create release assets directory
+        run: mkdir -p release-assets
+
+      - name: Move artifacts to release directory
+        run: |
+          find artifacts -name "dir-kill-*" -type f | while read file; do
+            cp "$file" release-assets/
+          done
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.tag }}
+          name: Release ${{ steps.get_version.outputs.version }}
+          body: |
+            ## dir-kill ${{ steps.get_version.outputs.version }}
+            
+            ### Downloads
+            - **Linux (x86_64)**: `dir-kill-linux-x86_64`
+            - **Windows (x86_64)**: `dir-kill-windows-x86_64.exe`
+            - **macOS (x86_64)**: `dir-kill-macos-x86_64`
+            - **macOS (Apple Silicon)**: `dir-kill-macos-aarch64`
+            
+            ### Installation
+            Download the appropriate binary for your platform and make it executable:
+            ```bash
+            chmod +x dir-kill-linux-x86_64
+            ```
+            
+            ### Verification
+            Verify the download integrity using the provided SHA256 checksums.
+          files: release-assets/*
+          draft: false
+          prerelease: false
+          update_existing: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 

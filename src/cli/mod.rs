@@ -1,6 +1,6 @@
-use clap::{Parser, Subcommand};
 use crate::ui;
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "dir-kill")]
@@ -35,4 +35,4 @@ pub fn run() -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests; 
+mod tests;
