@@ -23,7 +23,6 @@ dir-kill ls <pattern>
 dir-kill ls <pattern> [OPTIONS]
 
 OPTIONS:
-    -i, --ignore-case      Case-insensitive pattern matching
     -h, --help             Show help information
 ```
 
