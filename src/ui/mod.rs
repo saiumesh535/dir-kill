@@ -43,8 +43,6 @@ fn get_loading_frame() -> &'static str {
     frames[index]
 }
 
-
-
 /// Get beautiful animated directory icon with selection state
 fn get_directory_icon(selected: bool, is_highlighted: bool) -> &'static str {
     let time = std::time::Instant::now().elapsed().as_millis();

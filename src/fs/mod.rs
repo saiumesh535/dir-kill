@@ -133,9 +133,7 @@ fn search_directories_recursive(
 
             // Skip nested node_modules to avoid infinite recursion
             if pattern == "node_modules"
-                && path
-                    .file_name()
-                    .is_some_and(|name| name == "node_modules")
+                && path.file_name().is_some_and(|name| name == "node_modules")
             {
                 // If we're already inside a node_modules directory and looking for node_modules,
                 // skip recursing into this directory to avoid nested results

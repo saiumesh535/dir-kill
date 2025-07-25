@@ -308,9 +308,10 @@ impl App {
         if errors.is_empty() {
             Ok(deleted_paths)
         } else {
-            Err(std::io::Error::other(
-                format!("Some deletions failed: {}", errors.join("; ")),
-            ))
+            Err(std::io::Error::other(format!(
+                "Some deletions failed: {}",
+                errors.join("; ")
+            )))
         }
     }
 
