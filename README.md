@@ -6,7 +6,7 @@ A Rust-based directory management tool that helps you find and manage directorie
 
 dir-kill scans your file system to find directories that match specified patterns. It's particularly useful for finding and deleting stale project directories like `node_modules`, `target`, `dist`, and other build artifacts to help clean up disk space.
 
-![dir-kill](./assets/dir-kill.png)
+<img src="./assets/dir-kill.png" alt="dir-kill screenshot" width="800" height="600" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
 
 ## CLI Usage
 
