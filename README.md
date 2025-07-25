@@ -6,6 +6,8 @@ A sophisticated Rust-based directory management tool with beautiful TUI and powe
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-87%20passing-brightgreen.svg)](https://github.com/yourusername/dir-kill)
 
+![dir-kill](./assets/dir-kill.png)
+
 ## ✨ Features
 
 ### 🎯 Core Functionality
