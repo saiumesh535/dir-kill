@@ -63,6 +63,52 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             artifact_name: dir-kill-linux-x86_64
 
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.88.0
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          strip target/${{ matrix.target }}/release/dir-kill
+
+      - name: Create release directory
+        run: mkdir -p release
+
+      - name: Copy binary to release directory
+        run: cp target/${{ matrix.target }}/release/dir-kill release/${{ matrix.artifact_name }}
+
+      - name: Create checksum
+        run: |
+          cd release
+          sha256sum ${{ matrix.artifact_name }} > ${{ matrix.artifact_name }}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            release/${{ matrix.artifact_name }}
+            release/${{ matrix.artifact_name }}.sha256
+
   build-windows:
     name: Build for Windows
     needs: [test]
