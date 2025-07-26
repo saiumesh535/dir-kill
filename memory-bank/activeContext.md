@@ -10,17 +10,26 @@ The project has achieved production-ready status with all core features implemen
 - **User Experience Excellence**: Beautiful animations, intuitive interface, comprehensive error handling
 
 ### Current State
-- **All Core Features Complete**: CLI, TUI, selection, size calculation, progressive visual deletion, testing
-- **High Test Coverage**: 87 tests passing with comprehensive coverage across all modules
+- **All Core Features Complete**: CLI, TUI, selection, size calculation, progressive visual deletion, ignore patterns, testing
+- **High Test Coverage**: 117 tests passing with comprehensive coverage across all modules
 - **Production Ready**: All major functionality implemented, tested, and optimized
-- **Performance Optimized**: Real-time scanning, lazy loading, efficient UI rendering
+- **Performance Optimized**: Real-time scanning, lazy loading, efficient UI rendering, early termination for ignored directories
 
 ## Recent Changes
 
 ### Latest Enhancements (Most Recent)
-1. **Test Coverage Expansion** (Latest)
-   - **Increased Test Count**: From 82 to 87 tests with 100% pass rate
-   - **Comprehensive Coverage**: All modules thoroughly tested
+1. **Ignore Patterns Feature** (Latest)
+   - **Regex-based Ignore Patterns**: Support for comma-separated regex patterns to ignore directories
+   - **CLI Integration**: `--ignore` and `-i` flags for specifying ignore patterns
+   - **Full Integration**: Works in both CLI and TUI modes with real-time scanning
+   - **Comprehensive Testing**: 117 tests passing with extensive ignore pattern test coverage
+   - **Performance Optimized**: Early termination for ignored directories during scanning
+   - **Error Handling**: Graceful regex compilation error handling with helpful messages
+   - **Example Usage**: `dir-kill ls dist --ignore "node_modules,.git"` or `dir-kill ls src --ignore ".*\.rs$,tests"`
+
+2. **Test Coverage Expansion**
+   - **Increased Test Count**: From 87 to 117 tests with 100% pass rate
+   - **Comprehensive Coverage**: All modules thoroughly tested including new ignore patterns
    - **Edge Case Testing**: Robust testing for various scenarios and error conditions
    - **Performance Testing**: Critical path benchmarking and optimization
 

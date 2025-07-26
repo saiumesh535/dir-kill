@@ -19,6 +19,9 @@ pub enum Commands {
         /// Directory to list (defaults to current directory)
         #[arg(default_value = ".")]
         path: String,
+        /// Comma-separated regex patterns for directories to ignore (e.g., "node_modules,\.git")
+        #[arg(long, short)]
+        ignore: Option<String>,
     },
 }
 
@@ -26,9 +29,13 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Ls { pattern, path } => {
+        Commands::Ls {
+            pattern,
+            path,
+            ignore,
+        } => {
             // Use TUI with real-time scanning as default behavior
-            ui::display_directories_with_scanning(pattern, path)?;
+            ui::display_directories_with_scanning(pattern, path, ignore.as_deref().unwrap_or(""))?;
         }
     }
     Ok(())

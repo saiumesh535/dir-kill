@@ -10,6 +10,7 @@ pub struct App {
     pub selected: usize,
     pub pattern: String,
     pub path: String,
+    pub ignore_patterns: crate::fs::IgnorePatterns,
     pub current_page: usize,
     pub selection_mode: bool,
     pub deletion_progress: Option<DeletionProgress>,
@@ -247,11 +248,26 @@ fn get_deletion_priority(size: u64) -> DeletionPriority {
 
 impl App {
     pub fn new(directories: Vec<DirectoryInfo>, pattern: String, path: String) -> Self {
+        Self::new_with_ignore(
+            directories,
+            pattern,
+            path,
+            crate::fs::IgnorePatterns::new("").unwrap(),
+        )
+    }
+
+    pub fn new_with_ignore(
+        directories: Vec<DirectoryInfo>,
+        pattern: String,
+        path: String,
+        ignore_patterns: crate::fs::IgnorePatterns,
+    ) -> Self {
         Self {
             directories,
             selected: 0,
             pattern,
             path,
+            ignore_patterns,
             current_page: 0,
             selection_mode: false,
             deletion_progress: None,
