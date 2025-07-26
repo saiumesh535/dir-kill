@@ -38,6 +38,17 @@ pub enum CalculationStatus {
     Error(String),
 }
 
+/// Message for streaming directory discovery
+#[derive(Debug, Clone)]
+pub enum DiscoveryMessage {
+    /// A new directory was found
+    DirectoryFound(String),
+    /// Discovery is complete
+    DiscoveryComplete,
+    /// An error occurred during discovery
+    DiscoveryError(String),
+}
+
 /// Lists all directories matching the given pattern in the specified path
 ///
 /// # Arguments
@@ -70,6 +81,89 @@ pub fn find_directories(root_path: &str, pattern: &str) -> Result<Vec<String>> {
     search_directories_recursive(path, pattern, &mut matches)?;
 
     Ok(matches)
+}
+
+/// Streams directory discovery results as they're found
+///
+/// # Arguments
+/// * `root_path` - The root directory to search in
+/// * `pattern` - The directory name pattern to match
+/// * `sender` - Channel sender for streaming results
+///
+/// # Returns
+/// * `Result<()>` - Success or error
+pub fn stream_directories(
+    root_path: &str,
+    pattern: &str,
+    sender: std::sync::mpsc::Sender<DiscoveryMessage>,
+) -> Result<()> {
+    // Validate inputs
+    if pattern.is_empty() {
+        bail!("Pattern cannot be empty");
+    }
+
+    let path = Path::new(root_path);
+
+    // Check if path exists
+    if !path.exists() {
+        bail!("Path '{}' does not exist", root_path);
+    }
+
+    // Check if path is a directory
+    if !path.is_dir() {
+        bail!("Path '{}' is not a directory", root_path);
+    }
+
+    // Start streaming discovery
+    stream_directories_recursive(path, pattern, &sender)?;
+
+    // Send completion message
+    let _ = sender.send(DiscoveryMessage::DiscoveryComplete);
+
+    Ok(())
+}
+
+/// Recursively streams directory discovery with immediate results
+fn stream_directories_recursive(
+    current_path: &Path,
+    pattern: &str,
+    sender: &std::sync::mpsc::Sender<DiscoveryMessage>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(current_path)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Check if this directory matches the pattern
+            if let Some(file_name) = path.file_name() {
+                if file_name.to_string_lossy() == pattern {
+                    let dir_path = path.to_string_lossy().to_string();
+                    // Send immediately as found
+                    if sender
+                        .send(DiscoveryMessage::DirectoryFound(dir_path))
+                        .is_err()
+                    {
+                        // Channel closed, stop discovery
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Skip nested node_modules to avoid infinite recursion
+            if pattern == "node_modules"
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                // If we're already inside a node_modules directory and looking for node_modules,
+                // skip recursing into this directory to avoid nested results
+                continue;
+            }
+
+            // Recursively search subdirectories
+            stream_directories_recursive(&path, pattern, sender)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Lists all directories matching the given pattern with size information

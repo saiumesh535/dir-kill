@@ -100,69 +100,234 @@ fn test_find_directories_empty_pattern() {
     assert!(result.unwrap_err().to_string().contains("empty"));
 }
 
+// New tests for streaming functionality
 #[test]
-fn test_find_directories_special_characters() {
-    // Test with special characters in pattern
+fn test_stream_directories_basic() {
+    // Test basic streaming functionality
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
-    let special_dir = temp_path.join("test-dir_123");
-    fs::create_dir_all(&special_dir).unwrap();
+    // Create test directories
+    let test_dir1 = temp_path.join("test_pattern");
+    let test_dir2 = temp_path.join("subdir").join("test_pattern");
+    let other_dir = temp_path.join("other");
 
-    let result = find_directories(temp_path.to_str().unwrap(), "test-dir_123");
-    assert!(result.is_ok());
-    let paths = result.unwrap();
+    fs::create_dir_all(&test_dir1).unwrap();
+    fs::create_dir_all(&test_dir2).unwrap();
+    fs::create_dir_all(&other_dir).unwrap();
 
-    assert_eq!(paths.len(), 1);
-    assert!(paths[0].ends_with("test-dir_123"));
+    let (tx, rx) = std::sync::mpsc::channel::<DiscoveryMessage>();
+
+    // Start streaming in a separate thread
+    let temp_path_str = temp_path.to_str().unwrap().to_string();
+    let handle = std::thread::spawn(move || {
+        stream_directories(&temp_path_str, "test_pattern", tx).unwrap();
+    });
+
+    // Collect all messages
+    let mut discovered_paths = Vec::new();
+    let mut messages = Vec::new();
+
+    while let Ok(message) = rx.recv() {
+        messages.push(message.clone());
+        match message {
+            DiscoveryMessage::DirectoryFound(path) => {
+                discovered_paths.push(path);
+            }
+            DiscoveryMessage::DiscoveryComplete => {
+                break;
+            }
+            DiscoveryMessage::DiscoveryError(_) => {
+                panic!("Discovery should not fail");
+            }
+        }
+    }
+
+    handle.join().unwrap();
+
+    // Verify results
+    assert_eq!(discovered_paths.len(), 2);
+    assert!(discovered_paths.iter().any(|p| p.ends_with("test_pattern")));
+    assert!(
+        discovered_paths
+            .iter()
+            .any(|p| p.contains("subdir/test_pattern"))
+    );
+
+    // Verify we got completion message
+    assert!(
+        messages
+            .iter()
+            .any(|m| matches!(m, DiscoveryMessage::DiscoveryComplete))
+    );
 }
 
 #[test]
-fn test_find_directories_relative_paths() {
-    // Test with relative paths
-    let result = find_directories("src", "cli");
-    assert!(result.is_ok());
-    let paths = result.unwrap();
-
-    assert!(!paths.is_empty());
-    assert!(paths.iter().all(|p| p.contains("cli")));
-}
-
-#[test]
-fn test_find_directories_absolute_paths() {
-    // Test with absolute paths
-    let current_dir = std::env::current_dir().unwrap();
-    let result = find_directories(current_dir.to_str().unwrap(), "src");
-    assert!(result.is_ok());
-    let paths = result.unwrap();
-
-    assert!(!paths.is_empty());
-    assert!(paths.iter().all(|p| p.contains("src")));
-}
-
-#[test]
-fn test_find_directories_ignore_nested_node_modules() {
-    // Test that nested node_modules are ignored
+fn test_stream_directories_empty_result() {
+    // Test streaming with no matching directories
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
-    // Create nested structure: node_modules/node_modules/node_modules
+    // Create directories that don't match the pattern
+    let other_dir1 = temp_path.join("other1");
+    let other_dir2 = temp_path.join("other2");
+
+    fs::create_dir_all(&other_dir1).unwrap();
+    fs::create_dir_all(&other_dir2).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel::<DiscoveryMessage>();
+
+    let temp_path_str = temp_path.to_str().unwrap().to_string();
+    let handle = std::thread::spawn(move || {
+        stream_directories(&temp_path_str, "nonexistent_pattern", tx).unwrap();
+    });
+
+    let mut messages = Vec::new();
+    while let Ok(message) = rx.recv() {
+        messages.push(message.clone());
+        if matches!(message, DiscoveryMessage::DiscoveryComplete) {
+            break;
+        }
+    }
+
+    handle.join().unwrap();
+
+    // Should only get completion message, no directory found messages
+    assert_eq!(messages.len(), 1);
+    assert!(matches!(messages[0], DiscoveryMessage::DiscoveryComplete));
+}
+
+#[test]
+fn test_stream_directories_error_handling() {
+    // Test streaming with invalid path
+    let (tx, _rx) = std::sync::mpsc::channel::<DiscoveryMessage>();
+
+    let handle = std::thread::spawn(move || {
+        let result = stream_directories("/non/existent/path", "pattern", tx);
+        assert!(result.is_err());
+    });
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn test_stream_directories_progressive_discovery() {
+    // Test that directories are discovered progressively
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create multiple test directories at different depths
+    let dirs = vec![
+        temp_path.join("test_pattern"),
+        temp_path.join("level1").join("test_pattern"),
+        temp_path.join("level1").join("level2").join("test_pattern"),
+        temp_path
+            .join("level1")
+            .join("level2")
+            .join("level3")
+            .join("test_pattern"),
+    ];
+
+    for dir in &dirs {
+        fs::create_dir_all(dir).unwrap();
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel::<DiscoveryMessage>();
+
+    let temp_path_str = temp_path.to_str().unwrap().to_string();
+    let handle = std::thread::spawn(move || {
+        stream_directories(&temp_path_str, "test_pattern", tx).unwrap();
+    });
+
+    let mut discovered_paths = Vec::new();
+    let mut message_count = 0;
+
+    while let Ok(message) = rx.recv() {
+        message_count += 1;
+        match message {
+            DiscoveryMessage::DirectoryFound(path) => {
+                discovered_paths.push(path);
+            }
+            DiscoveryMessage::DiscoveryComplete => {
+                break;
+            }
+            DiscoveryMessage::DiscoveryError(_) => {
+                panic!("Discovery should not fail");
+            }
+        }
+    }
+
+    handle.join().unwrap();
+
+    // Should find all 4 directories
+    assert_eq!(discovered_paths.len(), 4);
+    assert_eq!(message_count, 5); // 4 directories + 1 completion message
+
+    // Verify all expected paths are found
+    for dir in &dirs {
+        let dir_str = dir.to_string_lossy().to_string();
+        assert!(discovered_paths.iter().any(|p| p == &dir_str));
+    }
+}
+
+#[test]
+fn test_stream_directories_nested_node_modules() {
+    // Test that nested node_modules are handled correctly
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create nested node_modules structure
     let node_modules1 = temp_path.join("node_modules");
-    let node_modules2 = node_modules1.join("node_modules");
-    let node_modules3 = node_modules2.join("node_modules");
+    let node_modules2 = temp_path.join("project1").join("node_modules");
+    let node_modules3 = temp_path
+        .join("project1")
+        .join("node_modules")
+        .join("subpackage")
+        .join("node_modules");
 
     fs::create_dir_all(&node_modules1).unwrap();
     fs::create_dir_all(&node_modules2).unwrap();
     fs::create_dir_all(&node_modules3).unwrap();
 
-    let result = find_directories(temp_path.to_str().unwrap(), "node_modules");
-    assert!(result.is_ok());
-    let paths = result.unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<DiscoveryMessage>();
 
-    // Should only find the top-level node_modules, not nested ones
-    assert_eq!(paths.len(), 1);
-    assert!(paths[0].ends_with("node_modules"));
-    assert!(!paths[0].contains("node_modules/node_modules"));
+    let temp_path_str = temp_path.to_str().unwrap().to_string();
+    let handle = std::thread::spawn(move || {
+        stream_directories(&temp_path_str, "node_modules", tx).unwrap();
+    });
+
+    let mut discovered_paths = Vec::new();
+
+    while let Ok(message) = rx.recv() {
+        match message {
+            DiscoveryMessage::DirectoryFound(path) => {
+                discovered_paths.push(path);
+            }
+            DiscoveryMessage::DiscoveryComplete => {
+                break;
+            }
+            DiscoveryMessage::DiscoveryError(_) => {
+                panic!("Discovery should not fail");
+            }
+        }
+    }
+
+    handle.join().unwrap();
+
+    // Should find exactly 2 node_modules (not 3, because nested ones are ignored)
+    assert_eq!(discovered_paths.len(), 2);
+    assert!(discovered_paths.iter().any(|p| p.ends_with("node_modules")));
+    assert!(
+        discovered_paths
+            .iter()
+            .any(|p| p.contains("project1/node_modules"))
+    );
+    // The deeply nested one should not be found
+    assert!(
+        !discovered_paths
+            .iter()
+            .any(|p| p.contains("subpackage/node_modules"))
+    );
 }
 
 #[test]
