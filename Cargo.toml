@@ -1,6 +1,6 @@
 [package]
 name = "dir-kill"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 
 [dependencies]
@@ -10,14 +10,14 @@ ratatui = "0.26"
 crossterm = "0.27"
 libc = "0.2.174"
 chrono = "0.4"
-regex = "1.10"
+regex = { version = "1.11.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3.8"
-
 
 [profile.release]
 strip = true
 opt-level = "z"
 lto = true
 codegen-units = 1
+panic = "abort"
