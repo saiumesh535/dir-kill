@@ -213,6 +213,13 @@ jobs:
           cd release
           shasum -a 256 ${{ matrix.artifact_name }} > ${{ matrix.artifact_name }}.sha256
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            release/${{ matrix.artifact_name }}
+            release/${{ matrix.artifact_name }}.sha256
 
 
   release:
