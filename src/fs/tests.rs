@@ -331,6 +331,138 @@ fn test_stream_directories_nested_node_modules() {
 }
 
 #[test]
+fn test_nested_pattern_avoidance_general() {
+    // Test that nested pattern avoidance works for any pattern, not just node_modules
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Test with 'dist' pattern
+    let dist1 = temp_path.join("dist");
+    let dist2 = temp_path.join("project1").join("dist");
+    let dist3 = temp_path
+        .join("project1")
+        .join("dist")
+        .join("build")
+        .join("dist");
+
+    fs::create_dir_all(&dist1).unwrap();
+    fs::create_dir_all(&dist2).unwrap();
+    fs::create_dir_all(&dist3).unwrap();
+
+    let result = find_directories(temp_path.to_str().unwrap(), "dist");
+    assert!(result.is_ok());
+    let paths = result.unwrap();
+
+    // Should find exactly 2 dist directories (not 3, because nested ones are ignored)
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().any(|p| p.ends_with("dist")));
+    assert!(paths.iter().any(|p| p.contains("project1/dist")));
+    // The deeply nested one should not be found
+    assert!(!paths.iter().any(|p| p.contains("build/dist")));
+}
+
+#[test]
+fn test_nested_pattern_avoidance_target() {
+    // Test that nested pattern avoidance works for 'target' pattern
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Test with 'target' pattern
+    let target1 = temp_path.join("target");
+    let target2 = temp_path.join("project1").join("target");
+    let target3 = temp_path
+        .join("project1")
+        .join("target")
+        .join("debug")
+        .join("target");
+
+    fs::create_dir_all(&target1).unwrap();
+    fs::create_dir_all(&target2).unwrap();
+    fs::create_dir_all(&target3).unwrap();
+
+    let result = find_directories(temp_path.to_str().unwrap(), "target");
+    assert!(result.is_ok());
+    let paths = result.unwrap();
+
+    // Should find exactly 2 target directories (not 3, because nested ones are ignored)
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().any(|p| p.ends_with("target")));
+    assert!(paths.iter().any(|p| p.contains("project1/target")));
+    // The deeply nested one should not be found
+    assert!(!paths.iter().any(|p| p.contains("debug/target")));
+}
+
+#[test]
+fn test_nested_pattern_avoidance_with_ignore() {
+    // Test that nested pattern avoidance works correctly with ignore patterns
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create structure with both nested patterns and ignored directories
+    let node_modules1 = temp_path.join("node_modules");
+    let node_modules2 = temp_path.join("project1").join("node_modules");
+    let node_modules3 = temp_path
+        .join("project1")
+        .join("node_modules")
+        .join("subpackage")
+        .join("node_modules");
+    let ignored_dir = temp_path.join("project1").join("node_modules").join("temp");
+
+    fs::create_dir_all(&node_modules1).unwrap();
+    fs::create_dir_all(&node_modules2).unwrap();
+    fs::create_dir_all(&node_modules3).unwrap();
+    fs::create_dir_all(&ignored_dir).unwrap();
+
+    let ignore_patterns = IgnorePatterns::new("temp").unwrap();
+    let result = find_directories_with_ignore(
+        temp_path.to_str().unwrap(),
+        "node_modules",
+        &ignore_patterns,
+    );
+    assert!(result.is_ok());
+    let paths = result.unwrap();
+
+    // Should find exactly 2 node_modules (not 3, because nested ones are ignored)
+    // The ignored 'temp' directory should not affect the count
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().any(|p| p.ends_with("node_modules")));
+    assert!(paths.iter().any(|p| p.contains("project1/node_modules")));
+    // The deeply nested one should not be found
+    assert!(!paths.iter().any(|p| p.contains("subpackage/node_modules")));
+}
+
+#[test]
+fn test_performance_optimization() {
+    // Test that performance optimizations work correctly
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create a simple directory structure to test optimizations
+    let project_path = temp_path.join("project");
+    fs::create_dir_all(&project_path).unwrap();
+
+    let target_path = project_path.join("target");
+    fs::create_dir_all(&target_path).unwrap();
+
+    let nested_target = target_path.join("debug").join("target");
+    fs::create_dir_all(&nested_target).unwrap();
+
+    // Test without ignore patterns (should use fast path)
+    let result = find_directories(temp_path.to_str().unwrap(), "target");
+    assert!(result.is_ok());
+    let paths = result.unwrap();
+    assert_eq!(paths.len(), 1); // Only the top-level target, not the nested one
+
+    // Test with ignore patterns
+    let ignore_patterns = IgnorePatterns::new("temp").unwrap();
+    let result_with_ignore =
+        find_directories_with_ignore(temp_path.to_str().unwrap(), "target", &ignore_patterns);
+    assert!(result_with_ignore.is_ok());
+    let paths_with_ignore = result_with_ignore.unwrap();
+    assert_eq!(paths_with_ignore.len(), 1); // Same result
+}
+
+#[test]
 fn test_format_size() {
     assert_eq!(format_size(0), "0 B");
     assert_eq!(format_size(1023), "1023 B");
@@ -435,4 +567,184 @@ fn test_last_modified_from_parent_directory() {
 
     // Clean up
     temp_dir.close().unwrap();
+}
+
+#[test]
+fn test_ignore_patterns_new_empty() {
+    let patterns = IgnorePatterns::new("").unwrap();
+    assert!(patterns.is_empty());
+    assert_eq!(patterns.len(), 0);
+}
+
+#[test]
+fn test_ignore_patterns_new_single() {
+    let patterns = IgnorePatterns::new("node_modules").unwrap();
+    assert!(!patterns.is_empty());
+    assert_eq!(patterns.len(), 1);
+    assert!(patterns.should_ignore("node_modules"));
+    assert!(!patterns.should_ignore("other"));
+}
+
+#[test]
+fn test_ignore_patterns_new_multiple() {
+    let patterns = IgnorePatterns::new("node_modules,.git,target").unwrap();
+    assert!(!patterns.is_empty());
+    assert_eq!(patterns.len(), 3);
+    assert!(patterns.should_ignore("node_modules"));
+    assert!(patterns.should_ignore(".git"));
+    assert!(patterns.should_ignore("target"));
+    assert!(!patterns.should_ignore("other"));
+}
+
+#[test]
+fn test_ignore_patterns_regex() {
+    let patterns = IgnorePatterns::new(".*\\.cache$,^temp.*").unwrap();
+    assert!(!patterns.is_empty());
+    assert_eq!(patterns.len(), 2);
+    assert!(patterns.should_ignore("cache.cache"));
+    assert!(patterns.should_ignore("temp_dir"));
+    assert!(patterns.should_ignore("something.cache"));
+    assert!(!patterns.should_ignore("other"));
+}
+
+#[test]
+fn test_ignore_patterns_invalid_regex() {
+    let result = IgnorePatterns::new("invalid[regex");
+    assert!(result.is_err());
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid regex pattern")
+    );
+}
+
+#[test]
+fn test_ignore_patterns_whitespace() {
+    let patterns = IgnorePatterns::new("  node_modules  ,  .git  ").unwrap();
+    assert_eq!(patterns.len(), 2);
+    assert!(patterns.should_ignore("node_modules"));
+    assert!(patterns.should_ignore(".git"));
+}
+
+#[test]
+fn test_find_directories_with_ignore() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create test directories
+    let node_modules = temp_path.join("node_modules");
+    let git_dir = temp_path.join(".git");
+    let target_dir = temp_path.join("target");
+    let other_dir = temp_path.join("other");
+
+    fs::create_dir_all(&node_modules).unwrap();
+    fs::create_dir_all(&git_dir).unwrap();
+    fs::create_dir_all(&target_dir).unwrap();
+    fs::create_dir_all(&other_dir).unwrap();
+
+    let ignore_patterns = IgnorePatterns::new("node_modules,.git").unwrap();
+    let result =
+        find_directories_with_ignore(temp_path.to_str().unwrap(), "other", &ignore_patterns);
+
+    assert!(result.is_ok());
+    let paths = result.unwrap();
+    assert_eq!(paths.len(), 1);
+    assert!(paths[0].ends_with("other"));
+}
+
+#[test]
+fn test_find_directories_with_ignore_regex() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create test directories
+    let cache_dir = temp_path.join("cache");
+    let temp_dir1 = temp_path.join("temp_dir");
+    let other_dir = temp_path.join("other");
+
+    fs::create_dir_all(&cache_dir).unwrap();
+    fs::create_dir_all(&temp_dir1).unwrap();
+    fs::create_dir_all(&other_dir).unwrap();
+
+    let ignore_patterns = IgnorePatterns::new(".*cache$,^temp.*").unwrap();
+    let result =
+        find_directories_with_ignore(temp_path.to_str().unwrap(), "other", &ignore_patterns);
+
+    assert!(result.is_ok());
+    let paths = result.unwrap();
+    assert_eq!(paths.len(), 1);
+    assert!(paths[0].ends_with("other"));
+}
+
+#[test]
+fn test_stream_directories_with_ignore() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().to_path_buf();
+
+    // Create test directories
+    let node_modules = temp_path.join("node_modules");
+    let other_dir = temp_path.join("other");
+
+    fs::create_dir_all(&node_modules).unwrap();
+    fs::create_dir_all(&other_dir).unwrap();
+
+    let ignore_patterns = IgnorePatterns::new("node_modules").unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let temp_path_str = temp_path.to_str().unwrap().to_string();
+    let handle = std::thread::spawn(move || {
+        stream_directories_with_ignore(&temp_path_str, "other", &ignore_patterns, tx)
+    });
+
+    let mut messages = Vec::new();
+    while let Ok(msg) = rx.recv() {
+        messages.push(msg);
+    }
+
+    handle.join().unwrap().unwrap();
+
+    // Should find the "other" directory but not "node_modules"
+    let found_dirs: Vec<String> = messages
+        .iter()
+        .filter_map(|msg| {
+            if let DiscoveryMessage::DirectoryFound(path) = msg {
+                Some(path.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(found_dirs.len(), 1);
+    assert!(found_dirs[0].ends_with("other"));
+}
+
+#[test]
+fn test_find_directories_with_size_and_ignore() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    // Create test directories with files
+    let node_modules = temp_path.join("node_modules");
+    let other_dir = temp_path.join("other");
+
+    fs::create_dir_all(&node_modules).unwrap();
+    fs::create_dir_all(&other_dir).unwrap();
+
+    // Add a file to make the directory have size
+    fs::write(other_dir.join("test.txt"), "content").unwrap();
+
+    let ignore_patterns = IgnorePatterns::new("node_modules").unwrap();
+    let result = find_directories_with_size_and_ignore(
+        temp_path.to_str().unwrap(),
+        "other",
+        &ignore_patterns,
+    );
+
+    assert!(result.is_ok());
+    let directories = result.unwrap();
+    assert_eq!(directories.len(), 1);
+    assert!(directories[0].path.ends_with("other"));
+    assert!(directories[0].size > 0);
 }

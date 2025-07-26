@@ -24,6 +24,7 @@ dir-kill ls <pattern> [OPTIONS]
 
 OPTIONS:
     -h, --help             Show help information
+    -i, --ignore <PATTERNS>    Comma-separated regex patterns for directories to ignore
 ```
 
 ### Examples
@@ -31,6 +32,41 @@ OPTIONS:
 ```bash
 # Find node_modules directories
 dir-kill ls node_modules
+
+# Find node_modules directories but ignore .git and temp directories
+dir-kill ls node_modules --ignore "\.git,temp"
+
+# Find target directories but ignore specific project directories
+dir-kill ls target --ignore "important-project,\.cargo"
+
+# Find dist directories with multiple ignore patterns
+dir-kill ls dist -i "node_modules,\.git,backup"
+```
+
+### Nested Pattern Avoidance
+
+dir-kill automatically avoids nested pattern matches to prevent infinite recursion and redundant results. For example:
+
+- When searching for `node_modules`, it won't scan inside existing `node_modules` directories
+- When searching for `dist`, it won't scan inside existing `dist` directories  
+- When searching for `target`, it won't scan inside existing `target` directories
+
+This behavior:
+- **Prevents infinite recursion** in deeply nested directory structures
+- **Improves performance** by avoiding redundant scanning
+- **Reduces noise** in results by focusing on top-level matches
+- **Works automatically** for any pattern you search for
+
+**Examples:**
+```bash
+# Will find /project/node_modules but skip /project/node_modules/some-package/node_modules
+dir-kill ls node_modules
+
+# Will find /project/dist but skip /project/dist/build/dist  
+dir-kill ls dist
+
+# Will find /project/target but skip /project/target/debug/target
+dir-kill ls target
 ```
 
 ## Installation

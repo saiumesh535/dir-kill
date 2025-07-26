@@ -116,7 +116,11 @@ pub fn restore_terminal() -> Result<()> {
 }
 
 /// Display directories in beautiful TUI format with real-time scanning
-pub fn display_directories_with_scanning(pattern: &str, path: &str) -> Result<()> {
+pub fn display_directories_with_scanning(
+    pattern: &str,
+    path: &str,
+    ignore_patterns: &str,
+) -> Result<()> {
     // Check if we're in a terminal that supports TUI
     let term = std::env::var("TERM").unwrap_or_default();
 
@@ -128,16 +132,16 @@ pub fn display_directories_with_scanning(pattern: &str, path: &str) -> Result<()
         match init_terminal() {
             Ok(mut terminal) => {
                 // TUI mode successful, use the full interface
-                display_directories_tui(&mut terminal, pattern, path)
+                display_directories_tui(&mut terminal, pattern, path, ignore_patterns)
             }
             Err(_) => {
                 // TUI mode failed, fallback to text mode
-                display_directories_text(pattern, path)
+                display_directories_text(pattern, path, ignore_patterns)
             }
         }
     } else {
         // Use text mode for unsupported terminals
-        display_directories_text(pattern, path)
+        display_directories_text(pattern, path, ignore_patterns)
     }
 }
 
@@ -146,8 +150,23 @@ fn display_directories_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     pattern: &str,
     path: &str,
+    ignore_patterns: &str,
 ) -> Result<()> {
-    let mut app = App::new(vec![], pattern.to_string(), path.to_string());
+    // Create ignore patterns first
+    let ignore_patterns = match fs::IgnorePatterns::new(ignore_patterns) {
+        Ok(patterns) => patterns,
+        Err(e) => {
+            eprintln!("Error parsing ignore patterns: {e}");
+            return Err(e);
+        }
+    };
+
+    let mut app = App::new_with_ignore(
+        vec![],
+        pattern.to_string(),
+        path.to_string(),
+        ignore_patterns.clone(),
+    );
 
     // Set initial discovery status
     app.set_discovery_status(app::DiscoveryStatus::Discovering);
@@ -170,8 +189,14 @@ fn display_directories_tui(
     // Start streaming discovery in background
     let pattern_clone = pattern.to_string();
     let path_clone = path.to_string();
+    let ignore_patterns_clone = ignore_patterns.clone();
     let _discovery_handle = std::thread::spawn(move || {
-        match fs::stream_directories(&path_clone, &pattern_clone, discovery_tx) {
+        match fs::stream_directories_with_ignore(
+            &path_clone,
+            &pattern_clone,
+            &ignore_patterns_clone,
+            discovery_tx,
+        ) {
             Ok(_) => {}
             Err(_) => {
                 // Error handling is done in the main loop
@@ -1067,14 +1092,20 @@ fn display_directories_tui(
 }
 
 /// Display directories in simple text mode (fallback when TUI fails)
-fn display_directories_text(pattern: &str, path: &str) -> Result<()> {
+fn display_directories_text(pattern: &str, path: &str, ignore_patterns: &str) -> Result<()> {
     println!("🔍 Directory Search Results");
     println!("Pattern: '{pattern}' in '{path}'");
+    if !ignore_patterns.trim().is_empty() {
+        println!("Ignore patterns: '{ignore_patterns}'");
+    }
     println!("⏳ Scanning directories...");
     println!();
 
+    // Create ignore patterns
+    let ignore_patterns = fs::IgnorePatterns::new(ignore_patterns)?;
+
     // Find directories with size information
-    let directories = fs::find_directories_with_size(path, pattern)?;
+    let directories = fs::find_directories_with_size_and_ignore(path, pattern, &ignore_patterns)?;
 
     if directories.is_empty() {
         println!("❌ No directories found matching pattern '{pattern}'");

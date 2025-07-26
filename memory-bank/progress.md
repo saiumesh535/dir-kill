@@ -5,6 +5,7 @@
 ### Core Functionality
 - **CLI Interface**: Complete clap-based command parsing with `ls` command
 - **Pattern Matching**: Directory search with pattern matching (e.g., `node_modules`)
+- **Ignore Patterns**: Regex-based directory filtering with comma-separated patterns
 - **Real-time Scanning**: Live directory discovery with progress indicators
 - **TUI Interface**: Beautiful terminal user interface with ratatui
 - **Size Calculation**: Directory size computation with lazy loading
@@ -23,7 +24,7 @@
 - **Delete Operations**: Safe directory deletion with progressive visual feedback and multiple key combinations
 
 ### Technical Infrastructure
-- **Testing**: 87 comprehensive tests with 100% pass rate
+- **Testing**: 117 comprehensive tests with 100% pass rate
 - **Modular Architecture**: Clean separation of CLI, UI, and FS modules
 - **Performance**: Optimized algorithms and efficient data structures
 - **Cross-platform**: Works on macOS, Linux, and Windows
@@ -86,13 +87,13 @@
 
 ### Development Status: **Production Ready**
 - **Core Features**: 100% Complete
-- **Testing**: 100% Coverage (87 tests)
+- **Testing**: 100% Coverage (117 tests)
 - **Documentation**: Comprehensive
 - **Performance**: Optimized
 - **Stability**: High
 
 ### Quality Metrics
-- **Test Coverage**: 87 tests passing (100% success rate)
+- **Test Coverage**: 117 tests passing (100% success rate)
 - **Code Quality**: Following Rust best practices
 - **Performance**: Real-time UI with 60fps target
 - **Memory Usage**: Efficient scaling

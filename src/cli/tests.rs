@@ -26,9 +26,14 @@ fn test_ls_default_arguments() {
     let cli = Cli::try_parse_from(args).unwrap();
 
     match cli.command {
-        Commands::Ls { pattern, path } => {
+        Commands::Ls {
+            pattern,
+            path,
+            ignore,
+        } => {
             assert_eq!(pattern, "test_pattern");
             assert_eq!(path, ".");
+            assert_eq!(ignore, None);
         }
     }
 }
@@ -40,9 +45,14 @@ fn test_ls_with_path() {
     let cli = Cli::try_parse_from(args).unwrap();
 
     match cli.command {
-        Commands::Ls { pattern, path } => {
+        Commands::Ls {
+            pattern,
+            path,
+            ignore,
+        } => {
             assert_eq!(pattern, "test_pattern");
             assert_eq!(path, "/tmp");
+            assert_eq!(ignore, None);
         }
     }
 }
@@ -86,9 +96,14 @@ fn test_ls_with_pattern() {
     let cli = Cli::try_parse_from(args).unwrap();
 
     match cli.command {
-        Commands::Ls { path, pattern } => {
+        Commands::Ls {
+            path,
+            pattern,
+            ignore,
+        } => {
             assert_eq!(path, ".");
             assert_eq!(pattern, "node_modules");
+            assert_eq!(ignore, None);
         }
     }
 }
@@ -100,9 +115,58 @@ fn test_ls_with_short_pattern() {
     let cli = Cli::try_parse_from(args).unwrap();
 
     match cli.command {
-        Commands::Ls { path, pattern } => {
+        Commands::Ls {
+            path,
+            pattern,
+            ignore,
+        } => {
             assert_eq!(path, ".");
             assert_eq!(pattern, "src");
+            assert_eq!(ignore, None);
+        }
+    }
+}
+
+#[test]
+fn test_ls_with_ignore_flag() {
+    // Test ls command with ignore flag
+    let args = vec![
+        "dir-kill",
+        "ls",
+        "test_pattern",
+        "--ignore",
+        "node_modules,.git",
+    ];
+    let cli = Cli::try_parse_from(args).unwrap();
+
+    match cli.command {
+        Commands::Ls {
+            path,
+            pattern,
+            ignore,
+        } => {
+            assert_eq!(path, ".");
+            assert_eq!(pattern, "test_pattern");
+            assert_eq!(ignore, Some("node_modules,.git".to_string()));
+        }
+    }
+}
+
+#[test]
+fn test_ls_with_ignore_short_flag() {
+    // Test ls command with short ignore flag
+    let args = vec!["dir-kill", "ls", "test_pattern", "-i", "target,build"];
+    let cli = Cli::try_parse_from(args).unwrap();
+
+    match cli.command {
+        Commands::Ls {
+            path,
+            pattern,
+            ignore,
+        } => {
+            assert_eq!(path, ".");
+            assert_eq!(pattern, "test_pattern");
+            assert_eq!(ignore, Some("target,build".to_string()));
         }
     }
 }

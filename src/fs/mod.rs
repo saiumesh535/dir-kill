@@ -1,6 +1,76 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use regex::Regex;
 use std::fs;
 use std::path::Path;
+
+/// Ignore patterns for directory filtering
+#[derive(Debug, Clone)]
+pub struct IgnorePatterns {
+    patterns: Vec<Regex>,
+}
+
+impl IgnorePatterns {
+    /// Create new ignore patterns from comma-separated string
+    ///
+    /// # Arguments
+    /// * `patterns_str` - Comma-separated regex patterns (e.g., "node_modules,\.git")
+    ///
+    /// # Returns
+    /// * `Result<Self>` - Compiled ignore patterns or error
+    pub fn new(patterns_str: &str) -> Result<Self> {
+        if patterns_str.trim().is_empty() {
+            return Ok(Self {
+                patterns: Vec::new(),
+            });
+        }
+
+        let mut patterns = Vec::new();
+        for pattern in patterns_str.split(',') {
+            let pattern = pattern.trim();
+            if !pattern.is_empty() {
+                let regex = Regex::new(pattern)
+                    .with_context(|| format!("Invalid regex pattern: '{pattern}'"))?;
+                patterns.push(regex);
+            }
+        }
+
+        Ok(Self { patterns })
+    }
+
+    /// Check if a directory name should be ignored
+    ///
+    /// # Arguments
+    /// * `dir_name` - Directory name to check
+    ///
+    /// # Returns
+    /// * `bool` - True if directory should be ignored
+    pub fn should_ignore(&self, dir_name: &str) -> bool {
+        // Fast path for empty patterns
+        if self.patterns.is_empty() {
+            return false;
+        }
+
+        self.patterns
+            .iter()
+            .any(|pattern| pattern.is_match(dir_name))
+    }
+
+    /// Check if ignore patterns are empty
+    ///
+    /// # Returns
+    /// * `bool` - True if no ignore patterns are set
+    pub fn is_empty(&self) -> bool {
+        self.patterns.is_empty()
+    }
+
+    /// Get the number of ignore patterns
+    ///
+    /// # Returns
+    /// * `usize` - Number of ignore patterns
+    pub fn len(&self) -> usize {
+        self.patterns.len()
+    }
+}
 
 /// Directory information with path, size, and last modified date
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +128,23 @@ pub enum DiscoveryMessage {
 /// # Returns
 /// * `Result<Vec<String>>` - List of matching directory paths or error
 pub fn find_directories(root_path: &str, pattern: &str) -> Result<Vec<String>> {
+    find_directories_with_ignore(root_path, pattern, &IgnorePatterns::new("")?)
+}
+
+/// Lists all directories matching the given pattern in the specified path with ignore patterns
+///
+/// # Arguments
+/// * `root_path` - The root directory to search in
+/// * `pattern` - The directory name pattern to match (e.g., "node_modules")
+/// * `ignore_patterns` - Patterns for directories to ignore
+///
+/// # Returns
+/// * `Result<Vec<String>>` - List of matching directory paths or error
+pub fn find_directories_with_ignore(
+    root_path: &str,
+    pattern: &str,
+    ignore_patterns: &IgnorePatterns,
+) -> Result<Vec<String>> {
     // Validate inputs
     if pattern.is_empty() {
         bail!("Pattern cannot be empty");
@@ -78,7 +165,7 @@ pub fn find_directories(root_path: &str, pattern: &str) -> Result<Vec<String>> {
     let mut matches = Vec::new();
 
     // Recursively search for directories
-    search_directories_recursive(path, pattern, &mut matches)?;
+    search_directories_recursive(path, pattern, ignore_patterns, &mut matches)?;
 
     Ok(matches)
 }
@@ -95,6 +182,25 @@ pub fn find_directories(root_path: &str, pattern: &str) -> Result<Vec<String>> {
 pub fn stream_directories(
     root_path: &str,
     pattern: &str,
+    sender: std::sync::mpsc::Sender<DiscoveryMessage>,
+) -> Result<()> {
+    stream_directories_with_ignore(root_path, pattern, &IgnorePatterns::new("")?, sender)
+}
+
+/// Streams directory discovery results as they're found with ignore patterns
+///
+/// # Arguments
+/// * `root_path` - The root directory to search in
+/// * `pattern` - The directory name pattern to match
+/// * `ignore_patterns` - Patterns for directories to ignore
+/// * `sender` - Channel sender for streaming results
+///
+/// # Returns
+/// * `Result<()>` - Success or error
+pub fn stream_directories_with_ignore(
+    root_path: &str,
+    pattern: &str,
+    ignore_patterns: &IgnorePatterns,
     sender: std::sync::mpsc::Sender<DiscoveryMessage>,
 ) -> Result<()> {
     // Validate inputs
@@ -115,7 +221,7 @@ pub fn stream_directories(
     }
 
     // Start streaming discovery
-    stream_directories_recursive(path, pattern, &sender)?;
+    stream_directories_recursive(path, pattern, ignore_patterns, &sender)?;
 
     // Send completion message
     let _ = sender.send(DiscoveryMessage::DiscoveryComplete);
@@ -127,16 +233,36 @@ pub fn stream_directories(
 fn stream_directories_recursive(
     current_path: &Path,
     pattern: &str,
+    ignore_patterns: &IgnorePatterns,
     sender: &std::sync::mpsc::Sender<DiscoveryMessage>,
+) -> Result<()> {
+    stream_directories_recursive_with_depth(current_path, pattern, ignore_patterns, sender, 0)
+}
+
+/// Recursively streams directory discovery with depth tracking to avoid nested pattern matches
+fn stream_directories_recursive_with_depth(
+    current_path: &Path,
+    pattern: &str,
+    ignore_patterns: &IgnorePatterns,
+    sender: &std::sync::mpsc::Sender<DiscoveryMessage>,
+    _depth: usize,
 ) -> Result<()> {
     for entry in std::fs::read_dir(current_path)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            // Check if this directory matches the pattern
+            // Get file name once to avoid redundant calls
             if let Some(file_name) = path.file_name() {
-                if file_name.to_string_lossy() == pattern {
+                let dir_name = file_name.to_string_lossy();
+
+                // Skip if directory matches ignore patterns
+                if ignore_patterns.should_ignore(&dir_name) {
+                    continue;
+                }
+
+                // Check if this directory matches the pattern
+                if dir_name == pattern {
                     let dir_path = path.to_string_lossy().to_string();
                     // Send immediately as found
                     if sender
@@ -147,19 +273,23 @@ fn stream_directories_recursive(
                         return Ok(());
                     }
                 }
-            }
 
-            // Skip nested node_modules to avoid infinite recursion
-            if pattern == "node_modules"
-                && path.file_name().is_some_and(|name| name == "node_modules")
-            {
-                // If we're already inside a node_modules directory and looking for node_modules,
-                // skip recursing into this directory to avoid nested results
-                continue;
+                // Skip nested pattern matches to avoid infinite recursion and redundant results
+                // If we're already inside a directory that matches our pattern, don't recurse into it
+                if dir_name == pattern {
+                    // Skip recursing into this directory to avoid nested results
+                    continue;
+                }
             }
 
             // Recursively search subdirectories
-            stream_directories_recursive(&path, pattern, sender)?;
+            stream_directories_recursive_with_depth(
+                &path,
+                pattern,
+                ignore_patterns,
+                sender,
+                _depth + 1,
+            )?;
         }
     }
 
@@ -175,7 +305,24 @@ fn stream_directories_recursive(
 /// # Returns
 /// * `Result<Vec<DirectoryInfo>>` - List of matching directories with size info or error
 pub fn find_directories_with_size(root_path: &str, pattern: &str) -> Result<Vec<DirectoryInfo>> {
-    let directories = find_directories(root_path, pattern)?;
+    find_directories_with_size_and_ignore(root_path, pattern, &IgnorePatterns::new("")?)
+}
+
+/// Lists all directories matching the given pattern with size information and ignore patterns
+///
+/// # Arguments
+/// * `root_path` - The root directory to search in
+/// * `pattern` - The directory name pattern to match (e.g., "node_modules")
+/// * `ignore_patterns` - Patterns for directories to ignore
+///
+/// # Returns
+/// * `Result<Vec<DirectoryInfo>>` - List of matching directories with size info or error
+pub fn find_directories_with_size_and_ignore(
+    root_path: &str,
+    pattern: &str,
+    ignore_patterns: &IgnorePatterns,
+) -> Result<Vec<DirectoryInfo>> {
+    let directories = find_directories_with_ignore(root_path, pattern, ignore_patterns)?;
     let mut directory_infos = Vec::new();
 
     for dir_path in directories {
@@ -211,31 +358,55 @@ pub fn find_directories_with_size(root_path: &str, pattern: &str) -> Result<Vec<
 fn search_directories_recursive(
     current_path: &Path,
     pattern: &str,
+    ignore_patterns: &IgnorePatterns,
     matches: &mut Vec<String>,
+) -> Result<()> {
+    search_directories_recursive_with_depth(current_path, pattern, ignore_patterns, matches, 0)
+}
+
+/// Recursively searches directories with depth tracking to avoid nested pattern matches
+fn search_directories_recursive_with_depth(
+    current_path: &Path,
+    pattern: &str,
+    ignore_patterns: &IgnorePatterns,
+    matches: &mut Vec<String>,
+    _depth: usize,
 ) -> Result<()> {
     for entry in std::fs::read_dir(current_path)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            // Check if this directory matches the pattern
+            // Get file name once to avoid redundant calls
             if let Some(file_name) = path.file_name() {
-                if file_name.to_string_lossy() == pattern {
+                let dir_name = file_name.to_string_lossy();
+
+                // Skip if directory matches ignore patterns
+                if ignore_patterns.should_ignore(&dir_name) {
+                    continue;
+                }
+
+                // Check if this directory matches the pattern
+                if dir_name == pattern {
                     matches.push(path.to_string_lossy().to_string());
+                }
+
+                // Skip nested pattern matches to avoid infinite recursion and redundant results
+                // If we're already inside a directory that matches our pattern, don't recurse into it
+                if dir_name == pattern {
+                    // Skip recursing into this directory to avoid nested results
+                    continue;
                 }
             }
 
-            // Skip nested node_modules to avoid infinite recursion
-            if pattern == "node_modules"
-                && path.file_name().is_some_and(|name| name == "node_modules")
-            {
-                // If we're already inside a node_modules directory and looking for node_modules,
-                // skip recursing into this directory to avoid nested results
-                continue;
-            }
-
             // Recursively search subdirectories
-            search_directories_recursive(&path, pattern, matches)?;
+            search_directories_recursive_with_depth(
+                &path,
+                pattern,
+                ignore_patterns,
+                matches,
+                _depth + 1,
+            )?;
         }
     }
 
