@@ -168,8 +168,9 @@ fn display_directories_tui(
         ignore_patterns.clone(),
     );
 
-    // Set initial discovery status
+    // Set initial discovery status and start timing
     app.set_discovery_status(app::DiscoveryStatus::Discovering);
+    app.start_discovery_timing();
 
     // Pre-calculate expensive values that don't change
     let current_dir_display = std::env::current_dir()
@@ -183,8 +184,6 @@ fn display_directories_tui(
 
     // Channels for size updates
     let (size_tx, size_rx) = std::sync::mpsc::channel::<(String, u64, String)>();
-    let (calc_status_tx, calc_status_rx) =
-        std::sync::mpsc::channel::<(String, crate::fs::CalculationStatus)>();
 
     // Start streaming discovery in background
     let pattern_clone = pattern.to_string();
@@ -240,9 +239,11 @@ fn display_directories_tui(
                     discovery_messages_processed += 1;
                 }
                 fs::DiscoveryMessage::DiscoveryComplete => {
+                    app.end_discovery_timing();
                     app.set_discovery_status(app::DiscoveryStatus::Complete);
                 }
                 fs::DiscoveryMessage::DiscoveryError(error) => {
+                    app.end_discovery_timing();
                     app.set_discovery_status(app::DiscoveryStatus::Error(error));
                 }
             }
@@ -298,40 +299,8 @@ fn display_directories_tui(
             }
         }
 
-        // Check for calculation status updates (process all available)
-        let mut status_updates_processed = 0;
-        while let Ok((path, status)) = calc_status_rx.try_recv() {
-            // Use cached index lookup for better performance
-            let index = if let Some(&idx) = directory_index_cache.get(&path) {
-                if idx < app.directories.len() && app.directories[idx].path == path {
-                    idx
-                } else {
-                    app.directories
-                        .iter()
-                        .position(|d| d.path == path)
-                        .unwrap_or(usize::MAX)
-                }
-            } else {
-                let idx = app
-                    .directories
-                    .iter()
-                    .position(|d| d.path == path)
-                    .unwrap_or(usize::MAX);
-                if idx != usize::MAX {
-                    directory_index_cache.insert(path.clone(), idx);
-                }
-                idx
-            };
-
-            if index != usize::MAX && index < app.directories.len() {
-                app.directories[index].calculation_status = status;
-            }
-
-            status_updates_processed += 1;
-            if status_updates_processed >= 5 {
-                break;
-            }
-        }
+        // Update total completion time if all calculations are done
+        app.update_total_completion_time();
 
         // Process deletion messages
         app.process_deletion_messages();
@@ -366,11 +335,11 @@ fn display_directories_tui(
                 // Spawn size calculation threads
                 for dir_path in paths_to_calculate {
                     let size_tx_for_calc = size_tx.clone();
-                    let calc_status_tx_for_calc = calc_status_tx.clone();
 
                     std::thread::spawn(move || {
+                        // Use optimized size calculation for better performance
                         let calculated_size =
-                            fs::calculate_directory_size(std::path::Path::new(&dir_path))
+                            fs::calculate_directory_size_jwalk(std::path::Path::new(&dir_path))
                                 .unwrap_or(0);
                         let formatted_size = fs::format_size(calculated_size);
 
@@ -379,8 +348,6 @@ fn display_directories_tui(
                             calculated_size,
                             formatted_size,
                         ));
-                        let _ = calc_status_tx_for_calc
-                            .send((dir_path, crate::fs::CalculationStatus::Completed));
                     });
                 }
             }
@@ -393,7 +360,7 @@ fn display_directories_tui(
             .margin(2)
             .constraints(
                 [
-                    Constraint::Length(4), // Header
+                    Constraint::Length(5), // Header (increased to accommodate scanning time)
                     Constraint::Min(0),    // Main content area
                     Constraint::Length(5), // Footer (increased for extra line)
                 ]
@@ -427,7 +394,7 @@ fn display_directories_tui(
             let total_count = app.directories.len();
             let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
             let total_formatted = fs::format_size(total_size);
-            let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+            let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
 
             // Enhanced Header with beautiful styling
             let header = Paragraph::new(vec![
@@ -490,6 +457,16 @@ fn display_directories_tui(
                             .add_modifier(Modifier::BOLD),
                     ),
                 }]),
+                // Add dedicated timing line
+                Line::from(vec![
+                    Span::styled("⏱️  Scan Time: ", Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        app.get_formatted_discovery_duration(),
+                        Style::default()
+                            .fg(ACCENT_COLOR)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]),
                 Line::from(vec![
                     Span::styled(
                         "📄 Page ",
@@ -638,10 +615,18 @@ fn display_directories_tui(
 
                         // Create beautiful styling for each component
 
+                        // Add timing information if available
+                        let timing_info = if let Some(calc_time) = &dir.calculation_time {
+                            format!(" ({}s)", fs::format_duration(calc_time))
+                        } else {
+                            String::new()
+                        };
+
                         ListItem::new(vec![Line::from(vec![
                             Span::styled(format!("{icon} "), icon_style),
                             Span::styled(format!("{selection_indicator} "), selection_style),
                             Span::styled(path, path_style),
+                            Span::styled(timing_info, Style::default().fg(MUTED_COLOR)),
                             Span::styled(" ", Style::default()),
                             Span::styled(status_icon, status_style),
                         ])])
@@ -679,7 +664,7 @@ fn display_directories_tui(
                 // Calculate total size
                 let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
                 let total_formatted = fs::format_size(total_size);
-                let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+                let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
                 let total_count = app.directories.len();
 
                 // Show details in right panel
@@ -741,6 +726,21 @@ fn display_directories_tui(
                                     .add_modifier(Modifier::BOLD),
                             ),
                         ]),
+                        Line::from(vec![]), // Empty line
+                        // Add timing information if available
+                        if let Some(calc_time) = &selected_dir.calculation_time {
+                            Line::from(vec![
+                                Span::styled("Calculation Time: ", Style::default().fg(TEXT_SECONDARY)),
+                                Span::styled(
+                                    fs::format_duration(calc_time),
+                                    Style::default()
+                                        .fg(ACCENT_COLOR)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                            ])
+                        } else {
+                            Line::from(vec![])
+                        },
                         Line::from(vec![]), // Empty line
                         Line::from(vec![
                             Span::styled("📊 ", Style::default().fg(ACCENT_COLOR)),
@@ -1013,6 +1013,49 @@ fn display_directories_tui(
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]),
+                // Add timing and size information line
+                Line::from(vec![
+                    Span::styled(
+                        "⏱️  Scan: ",
+                        Style::default()
+                            .fg(WARNING_COLOR)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        app.get_formatted_discovery_duration(),
+                        Style::default().fg(ACCENT_COLOR),
+                    ),
+                    Span::styled(" | Size: ", Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        total_formatted.clone(),
+                        Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" | Calc: ", Style::default().fg(TEXT_SECONDARY)),
+                    {
+                        let completed_calcs: Vec<_> = app.directories.iter()
+                            .filter_map(|dir| dir.calculation_time)
+                            .collect();
+                        if !completed_calcs.is_empty() {
+                            let avg_time = completed_calcs.iter().sum::<std::time::Duration>() / completed_calcs.len() as u32;
+                            let max_time = completed_calcs.iter().max().unwrap();
+                            Span::styled(
+                                format!(
+                                    "Avg: {}, Max: {} ({}/{})",
+                                    fs::format_duration(&avg_time),
+                                    fs::format_duration(max_time),
+                                    completed_calcs.len(),
+                                    total_count
+                                ),
+                                Style::default().fg(ACCENT_COLOR),
+                            )
+                        } else {
+                            Span::styled(
+                                format!("Calculating... (0/{})", total_count),
+                                Style::default().fg(WARNING_COLOR),
+                            )
+                        }
+                    },
+                ]),
             ])
             .block(
                 Block::default()
@@ -1121,7 +1164,12 @@ fn display_directories_text(pattern: &str, path: &str, ignore_patterns: &str) ->
 
     for (i, dir) in directories.iter().enumerate() {
         let page = i / items_per_page + 1;
-        println!("📁 {} ({})", clean_path(&dir.path), dir.formatted_size);
+        let timing_info = if let Some(calc_time) = &dir.calculation_time {
+            format!(" (calculated in {})", fs::format_duration(calc_time))
+        } else {
+            String::new()
+        };
+        println!("📁 {} ({}){}", clean_path(&dir.path), dir.formatted_size, timing_info);
 
         // Add page separator
         if (i + 1) % items_per_page == 0 && i < directories.len() - 1 {
@@ -1131,8 +1179,12 @@ fn display_directories_text(pattern: &str, path: &str, ignore_patterns: &str) ->
         }
     }
 
+    // Calculate total size for summary
+    let total_size: u64 = directories.iter().map(|dir| dir.size).sum();
+    let total_formatted = fs::format_size(total_size);
+
     println!();
-    println!("📊 Total: {} directories found", directories.len());
+    println!("📊 Total: {} directories found, {} total size", directories.len(), total_formatted);
     println!("💡 Tip: Use a terminal that supports TUI for a better experience");
 
     Ok(())
@@ -1153,6 +1205,7 @@ mod tests {
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         }
     }
 
@@ -1166,7 +1219,8 @@ mod tests {
             formatted_last_modified: "Unknown".to_string(),
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
-            calculation_status: crate::fs::CalculationStatus::NotStarted,
+            calculation_status: crate::fs::CalculationStatus::Calculating,
+            calculation_time: None,
         }
     }
 
@@ -1250,6 +1304,7 @@ mod tests {
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         });
 
         // Should still be scanning after receiving first item
@@ -1428,6 +1483,7 @@ mod tests {
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::NotStarted,
+            calculation_time: None,
         });
 
         // Try to update an index that doesn't exist
@@ -1453,7 +1509,7 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 0);
 
-        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
         assert_eq!(calculated_count, 0);
     }
 
@@ -1469,6 +1525,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1479,6 +1536,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1489,6 +1547,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
         ];
 
@@ -1498,7 +1557,7 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 6144); // 1024 + 2048 + 3072
 
-        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
         assert_eq!(calculated_count, 3);
     }
 
@@ -1514,6 +1573,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1524,6 +1584,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1534,6 +1595,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
             },
         ];
 
@@ -1592,6 +1654,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1602,6 +1665,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1612,6 +1676,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
         ];
 
@@ -1648,6 +1713,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1658,6 +1724,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
         ];
 
@@ -1666,7 +1733,7 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 3 * 1024 * 1024 * 1024); // 3 GB
 
-        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
         assert_eq!(calculated_count, 2);
     }
 
@@ -1682,6 +1749,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1692,6 +1760,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -1702,6 +1771,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
         ];
 
@@ -1710,8 +1780,8 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 1024); // Only the non-empty directory contributes
 
-        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
-        assert_eq!(calculated_count, 1); // Only one directory has size > 0
+        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+        assert_eq!(calculated_count, 3); // All directories have completed calculations
     }
 
     #[test]
@@ -1729,6 +1799,7 @@ mod tests {
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         };
         assert_eq!(indicator(&dir), "☐");
         dir.selected = true;
@@ -1751,6 +1822,7 @@ mod tests {
                     selected: false,
                     deletion_status: crate::fs::DeletionStatus::Normal,
                     calculation_status: crate::fs::CalculationStatus::Completed,
+                    calculation_time: None,
                 },
                 DirectoryInfo {
                     last_modified: None,
@@ -1761,6 +1833,7 @@ mod tests {
                     selected: false,
                     deletion_status: crate::fs::DeletionStatus::Normal,
                     calculation_status: crate::fs::CalculationStatus::Completed,
+                    calculation_time: None,
                 },
             ],
             "test".to_string(),
@@ -1843,6 +1916,7 @@ mod tests {
             selected: false,
             deletion_status: DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         };
 
         // Test deleting status (should show 🔄 icon)
@@ -1855,6 +1929,7 @@ mod tests {
             selected: false,
             deletion_status: DeletionStatus::Deleting,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         };
 
         // Test deleted status (should show 🗑️ icon)
@@ -1867,6 +1942,7 @@ mod tests {
             selected: false,
             deletion_status: DeletionStatus::Deleted,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         };
 
         // Test error status (should show ⚠️ icon with message)
@@ -1879,6 +1955,7 @@ mod tests {
             selected: false,
             deletion_status: DeletionStatus::Error("Permission denied".to_string()),
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         };
 
         // Verify the status variants exist and work correctly
@@ -1941,6 +2018,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
             });
         }
 
@@ -1957,6 +2035,7 @@ mod tests {
             if let Some(dir) = app.directories.iter_mut().find(|d| d.path == path) {
                 dir.size = size;
                 dir.formatted_size = formatted_size;
+                dir.calculation_status = crate::fs::CalculationStatus::Completed;
             }
         }
 
@@ -1979,6 +2058,7 @@ mod tests {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
             });
         }
 
@@ -1994,6 +2074,7 @@ mod tests {
             if let Some(dir) = app.directories.iter_mut().find(|d| d.path == path) {
                 dir.size = size;
                 dir.formatted_size = formatted_size;
+                dir.calculation_status = crate::fs::CalculationStatus::Completed;
             }
         }
 
@@ -2009,7 +2090,7 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 21504); // 1024 + 2048 + 3072 + 5120 + 4096 + 6144
 
-        let calculated_count = app.directories.iter().filter(|dir| dir.size > 0).count();
+        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
         assert_eq!(calculated_count, 6);
     }
 
@@ -2107,6 +2188,7 @@ mod tests {
                 selected: false,
                 deletion_status: DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -2117,6 +2199,7 @@ mod tests {
                 selected: false,
                 deletion_status: DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -2127,6 +2210,7 @@ mod tests {
                 selected: false,
                 deletion_status: DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
         ];
 
@@ -2201,6 +2285,7 @@ mod tests {
                 selected: false,
                 deletion_status: DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -2211,6 +2296,7 @@ mod tests {
                 selected: false,
                 deletion_status: DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
             DirectoryInfo {
                 last_modified: None,
@@ -2221,6 +2307,7 @@ mod tests {
                 selected: false,
                 deletion_status: DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::Completed,
+                calculation_time: None,
             },
         ];
 
@@ -2298,6 +2385,7 @@ mod tests {
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         };
 
         // Verify that the directory has proper last modified time

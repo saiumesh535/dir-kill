@@ -2,6 +2,8 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 use std::fs;
 use std::path::Path;
+use filesize::PathExt;
+use rayon::prelude::*;
 
 /// Ignore patterns for directory filtering
 #[derive(Debug, Clone)]
@@ -83,6 +85,7 @@ pub struct DirectoryInfo {
     pub selected: bool,
     pub deletion_status: DeletionStatus,
     pub calculation_status: CalculationStatus,
+    pub calculation_time: Option<std::time::Duration>,
 }
 
 /// Status of directory deletion
@@ -323,31 +326,36 @@ pub fn find_directories_with_size_and_ignore(
     ignore_patterns: &IgnorePatterns,
 ) -> Result<Vec<DirectoryInfo>> {
     let directories = find_directories_with_ignore(root_path, pattern, ignore_patterns)?;
-    let mut directory_infos = Vec::new();
 
-    for dir_path in directories {
-        let path = Path::new(&dir_path);
-        let size = calculate_directory_size(path).unwrap_or(0);
-        let formatted_size = format_size(size);
-        // Get last modified time for the parent directory (not the matching directory itself)
-        let parent_path = path.parent().unwrap_or(path);
-        let last_modified = get_directory_last_modified(parent_path);
-        let formatted_last_modified = last_modified
-            .as_ref()
-            .map(format_last_modified)
-            .unwrap_or_else(|| "Unknown".to_string());
+    // Process directories in parallel for better performance
+    let mut directory_infos: Vec<DirectoryInfo> = directories
+        .par_iter()
+        .map(|dir_path| {
+            let path = Path::new(dir_path);
+            // Use optimized size calculation with timing
+            let (size, calculation_time) = calculate_directory_size_with_timing(path).unwrap_or((0, std::time::Duration::ZERO));
+            let formatted_size = format_size(size);
+            // Get last modified time for the parent directory (not the matching directory itself)
+            let parent_path = path.parent().unwrap_or(path);
+            let last_modified = get_directory_last_modified(parent_path);
+            let formatted_last_modified = last_modified
+                .as_ref()
+                .map(format_last_modified)
+                .unwrap_or_else(|| "Unknown".to_string());
 
-        directory_infos.push(DirectoryInfo {
-            path: dir_path,
-            size,
-            formatted_size,
-            last_modified,
-            formatted_last_modified,
-            selected: false,
-            deletion_status: DeletionStatus::Normal,
-            calculation_status: CalculationStatus::Completed,
-        });
-    }
+            DirectoryInfo {
+                path: dir_path.clone(),
+                size,
+                formatted_size,
+                last_modified,
+                formatted_last_modified,
+                selected: false,
+                deletion_status: DeletionStatus::Normal,
+                calculation_status: CalculationStatus::Completed,
+                calculation_time: Some(calculation_time),
+            }
+        })
+        .collect();
 
     // Sort by size (largest first)
     directory_infos.sort_by(|a, b| b.size.cmp(&a.size));
@@ -418,7 +426,7 @@ pub fn find_directories_current(pattern: &str) -> Result<Vec<String>> {
     find_directories(".", pattern)
 }
 
-/// Calculate the total size of a directory in bytes
+/// Calculate the total size of a directory in bytes (optimized version)
 pub fn calculate_directory_size(path: &Path) -> Result<u64> {
     let mut total_size = 0u64;
 
@@ -436,6 +444,127 @@ pub fn calculate_directory_size(path: &Path) -> Result<u64> {
     }
 
     Ok(total_size)
+}
+
+/// Calculate the total size of a directory in bytes using optimized disk size calculation
+pub fn calculate_directory_size_optimized(path: &Path) -> Result<u64> {
+    let mut total_size = 0u64;
+
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let entry_path = entry.path();
+
+            if entry_path.is_file() {
+                // Use optimized disk size calculation
+                if let Ok(metadata) = entry.metadata() {
+                    total_size += entry_path.size_on_disk_fast(&metadata).unwrap_or_else(|_| metadata.len());
+                }
+            } else if entry_path.is_dir() {
+                total_size += calculate_directory_size_optimized(&entry_path)?;
+            }
+        }
+    }
+
+    Ok(total_size)
+}
+
+/// Calculate the total size of a directory in bytes using parallel processing
+pub fn calculate_directory_size_parallel(path: &Path) -> Result<u64> {
+    if !path.is_dir() {
+        return Ok(0);
+    }
+
+    let entries: Vec<_> = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+    
+    let total_size: u64 = entries
+        .par_iter()
+        .map(|entry| {
+            let entry_path = &entry.path();
+            
+            if entry_path.is_file() {
+                // Use optimized disk size calculation
+                if let Ok(metadata) = entry.metadata() {
+                    entry_path.size_on_disk_fast(&metadata).unwrap_or_else(|_| metadata.len())
+                } else {
+                    0
+                }
+            } else if entry_path.is_dir() {
+                calculate_directory_size_parallel(entry_path).unwrap_or(0)
+            } else {
+                0
+            }
+        })
+        .sum();
+
+    Ok(total_size)
+}
+
+/// Calculate directory size using jwalk for maximum performance (like dua-cli)
+pub fn calculate_directory_size_jwalk(path: &Path) -> Result<u64> {
+    if !path.is_dir() {
+        return Ok(0);
+    }
+
+    let mut total_size = 0u64;
+    
+    // Use jwalk for parallel directory traversal
+    for entry in jwalk::WalkDir::new(path)
+        .skip_hidden(false)
+        .process_read_dir(|_depth, _path, _read_dir_state, _children| {
+            // This callback allows for custom processing of directory entries
+        })
+    {
+        match entry {
+            Ok(entry) => {
+                if entry.file_type().is_file() {
+                    if let Ok(metadata) = entry.metadata() {
+                        // Use optimized disk size calculation
+                        total_size += entry.path().size_on_disk_fast(&metadata).unwrap_or_else(|_| metadata.len());
+                    }
+                }
+            }
+            Err(_) => {
+                // Skip entries that can't be read
+                continue;
+            }
+        }
+    }
+
+    Ok(total_size)
+}
+
+/// Calculate directory size with timing information
+pub fn calculate_directory_size_with_timing(path: &Path) -> Result<(u64, std::time::Duration)> {
+    let start_time = std::time::Instant::now();
+    let size = calculate_directory_size_jwalk(path)?;
+    let duration = start_time.elapsed();
+    Ok((size, duration))
+}
+
+/// Format duration in a human-readable format
+pub fn format_duration(duration: &std::time::Duration) -> String {
+    if duration.as_secs() > 0 {
+        if duration.as_secs() == 1 {
+            "1 second".to_string()
+        } else {
+            format!("{} seconds", duration.as_secs())
+        }
+    } else if duration.as_millis() > 0 {
+        if duration.as_millis() == 1 {
+            "1 millisecond".to_string()
+        } else {
+            format!("{} milliseconds", duration.as_millis())
+        }
+    } else if duration.as_micros() > 0 {
+        if duration.as_micros() == 1 {
+            "1 microsecond".to_string()
+        } else {
+            format!("{} microseconds", duration.as_micros())
+        }
+    } else {
+        format!("{} nanoseconds", duration.as_nanos())
+    }
 }
 
 /// Get the last modified time of a directory

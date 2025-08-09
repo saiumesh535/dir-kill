@@ -23,6 +23,12 @@ pub struct App {
     pub pending_directories: Vec<String>,
     pub batch_size: usize,
     pub total_discovered: usize,
+    // Discovery timing
+    pub discovery_start_time: Option<std::time::Instant>,
+    pub discovery_end_time: Option<std::time::Instant>,
+    pub discovery_duration: Option<std::time::Duration>,
+    // Total completion timing (discovery + all calculations)
+    pub total_completion_time: Option<std::time::Duration>,
     // Parallel deletion system
     pub deletion_thread_pool: Option<DeletionThreadPool>,
 }
@@ -279,6 +285,10 @@ impl App {
             pending_directories: Vec::new(),
             batch_size: 5, // Default batch size for progressive loading
             total_discovered: 0,
+            discovery_start_time: None,
+            discovery_end_time: None,
+            discovery_duration: None,
+            total_completion_time: None,
             deletion_thread_pool: None,
         }
     }
@@ -325,6 +335,7 @@ impl App {
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
             };
 
             self.directories.push(directory_info);
@@ -359,9 +370,70 @@ impl App {
         }
     }
 
+    /// Start discovery timing
+    pub fn start_discovery_timing(&mut self) {
+        self.discovery_start_time = Some(std::time::Instant::now());
+        self.discovery_end_time = None;
+        self.discovery_duration = None;
+    }
+
+    /// End discovery timing
+    pub fn end_discovery_timing(&mut self) {
+        if let Some(start_time) = self.discovery_start_time {
+            self.discovery_end_time = Some(std::time::Instant::now());
+            self.discovery_duration = Some(self.discovery_end_time.unwrap().duration_since(start_time));
+        }
+    }
+
+    /// Get discovery duration
+    pub fn get_discovery_duration(&self) -> Option<std::time::Duration> {
+        if let Some(duration) = self.discovery_duration {
+            Some(duration)
+        } else if let (Some(start_time), Some(end_time)) = (self.discovery_start_time, self.discovery_end_time) {
+            Some(end_time.duration_since(start_time))
+        } else if let Some(start_time) = self.discovery_start_time {
+            // Discovery is still in progress, calculate current duration
+            Some(std::time::Instant::now().duration_since(start_time))
+        } else {
+            None
+        }
+    }
+
+    /// Get formatted discovery duration
+    pub fn get_formatted_discovery_duration(&self) -> String {
+        if let Some(duration) = self.get_discovery_duration() {
+            crate::fs::format_duration(&duration)
+        } else {
+            "Not started".to_string()
+        }
+    }
+
+    /// Update total completion time if all calculations are done
+    pub fn update_total_completion_time(&mut self) {
+        // Only update if we haven't already captured the completion time
+        if self.total_completion_time.is_none() {
+            let calculated_count = self.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+            let total_count = self.directories.len();
+            
+            // If all calculations are complete and we have a start time
+            if calculated_count == total_count && total_count > 0 {
+                if let Some(start_time) = self.discovery_start_time {
+                    self.total_completion_time = Some(std::time::Instant::now().duration_since(start_time));
+                }
+            }
+        }
+    }
+
     /// Check if discovery is still in progress
     pub fn is_discovering(&self) -> bool {
         matches!(self.discovery_status, DiscoveryStatus::Discovering)
+    }
+
+    /// Get the current total size of all directories
+    pub fn get_current_total_size(&self) -> (u64, String) {
+        let total_size: u64 = self.directories.iter().map(|dir| dir.size).sum();
+        let formatted_size = crate::fs::format_size(total_size);
+        (total_size, formatted_size)
     }
 
     /// Get discovery progress information
@@ -369,21 +441,69 @@ impl App {
         match self.discovery_status {
             DiscoveryStatus::NotStarted => "Ready to scan...".to_string(),
             DiscoveryStatus::Discovering => {
-                if self.total_discovered == 0 {
-                    "Scanning directories...".to_string()
+                let timing_info = if let Some(duration) = self.get_discovery_duration() {
+                    format!(" ({} elapsed)", crate::fs::format_duration(&duration))
                 } else {
+                    String::new()
+                };
+                
+                if self.total_discovered == 0 {
+                    format!("Scanning directories...{}", timing_info)
+                } else {
+                    let (_, size_formatted) = self.get_current_total_size();
                     format!(
-                        "Found {} directories, showing {}...",
+                        "Found {} directories ({}), showing {}...{}",
                         self.total_discovered,
-                        self.directories.len()
+                        size_formatted,
+                        self.directories.len(),
+                        timing_info
                     )
                 }
             }
             DiscoveryStatus::Complete => {
-                format!("Scan complete: {} directories found", self.total_discovered)
+                // Include size calculation progress
+                let calculated_count = self.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+                let total_count = self.directories.len();
+                let (_, size_formatted) = self.get_current_total_size();
+                
+                if calculated_count == total_count && total_count > 0 {
+                    // All calculations complete - show fixed total time and size
+                    let total_timing = if let Some(completion_time) = self.total_completion_time {
+                        format!("scan: {}", crate::fs::format_duration(&completion_time))
+                    } else if let Some(duration) = self.get_discovery_duration() {
+                        format!("scan: {}", crate::fs::format_duration(&duration))
+                    } else {
+                        "scan: unknown".to_string()
+                    };
+                    format!("Scan complete: {} directories found, {} total ({})", 
+                        self.total_discovered, size_formatted, total_timing)
+                } else if total_count == 0 {
+                    // No directories found - just show discovery time
+                    let discovery_timing = if let Some(duration) = self.get_discovery_duration() {
+                        format!("scan: {}", crate::fs::format_duration(&duration))
+                    } else {
+                        "scan: unknown".to_string()
+                    };
+                    format!("Scan complete: {} directories found ({})", 
+                        self.total_discovered, discovery_timing)
+                } else {
+                    // Still calculating - show discovery time, size, and progress
+                    let discovery_timing = if let Some(duration) = self.get_discovery_duration() {
+                        format!("scan: {}", crate::fs::format_duration(&duration))
+                    } else {
+                        "scan: unknown".to_string()
+                    };
+                    format!("Scan complete: {} directories found, {} total ({}, calculating sizes {}/{})", 
+                        self.total_discovered, size_formatted, discovery_timing, calculated_count, total_count)
+                }
             }
             DiscoveryStatus::Error(ref error) => {
-                format!("Scan error: {error}")
+                let timing_info = if let Some(duration) = self.get_discovery_duration() {
+                    format!(" after {}", crate::fs::format_duration(&duration))
+                } else {
+                    String::new()
+                };
+                format!("Scan error: {}{}", error, timing_info)
             }
         }
     }
@@ -922,6 +1042,7 @@ mod tests {
             selected: false,
             deletion_status: crate::fs::DeletionStatus::Normal,
             calculation_status: crate::fs::CalculationStatus::Completed,
+            calculation_time: None,
         }
     }
 
@@ -1512,7 +1633,7 @@ mod tests {
         app.process_remaining_pending();
 
         let progress = app.get_discovery_progress();
-        assert!(progress.contains("Found 2 directories, showing 2..."));
+        assert!(progress.contains("Found 2 directories") && progress.contains("showing 2"));
 
         // Complete
         app.set_discovery_status(DiscoveryStatus::Complete);
