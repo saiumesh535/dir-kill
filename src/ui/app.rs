@@ -391,11 +391,8 @@ impl App {
             Some(duration)
         } else if let (Some(start_time), Some(end_time)) = (self.discovery_start_time, self.discovery_end_time) {
             Some(end_time.duration_since(start_time))
-        } else if let Some(start_time) = self.discovery_start_time {
-            // Discovery is still in progress, calculate current duration
-            Some(std::time::Instant::now().duration_since(start_time))
         } else {
-            None
+            self.discovery_start_time.map(|start_time| std::time::Instant::now().duration_since(start_time))
         }
     }
 
@@ -448,7 +445,7 @@ impl App {
                 };
                 
                 if self.total_discovered == 0 {
-                    format!("Scanning directories...{}", timing_info)
+                    format!("Scanning directories...{timing_info}")
                 } else {
                     let (_, size_formatted) = self.get_current_total_size();
                     format!(
@@ -503,7 +500,7 @@ impl App {
                 } else {
                     String::new()
                 };
-                format!("Scan error: {}{}", error, timing_info)
+                format!("Scan error: {error}{timing_info}")
             }
         }
     }
@@ -1198,7 +1195,7 @@ mod tests {
     #[test]
     fn test_pagination() {
         let directories = (0..25)
-            .map(|i| create_test_directory(&format!("dir{}", i), i as u64 * 100))
+            .map(|i| create_test_directory(&format!("dir{i}"), i as u64 * 100))
             .collect();
         let mut app = App::new(directories, "test".to_string(), ".".to_string());
         let items_per_page = 20;
@@ -1241,7 +1238,7 @@ mod tests {
     #[test]
     fn test_pagination_bounds() {
         let directories = (0..5)
-            .map(|i| create_test_directory(&format!("dir{}", i), i as u64 * 100))
+            .map(|i| create_test_directory(&format!("dir{i}"), i as u64 * 100))
             .collect();
         let mut app = App::new(directories, "test".to_string(), ".".to_string());
         let items_per_page = 20;
@@ -1260,7 +1257,7 @@ mod tests {
     #[test]
     fn test_visible_selected_index() {
         let directories = (0..25)
-            .map(|i| create_test_directory(&format!("dir{}", i), i as u64 * 100))
+            .map(|i| create_test_directory(&format!("dir{i}"), i as u64 * 100))
             .collect();
         let mut app = App::new(directories, "test".to_string(), ".".to_string());
         let items_per_page = 20;
@@ -1289,11 +1286,11 @@ mod tests {
             "test".to_string(),
             ".".to_string(),
         );
-        assert_eq!(app.directories[0].selected, false);
+        assert!(!app.directories[0].selected);
         app.toggle_current_selection();
-        assert_eq!(app.directories[0].selected, true);
+        assert!(app.directories[0].selected);
         app.toggle_current_selection();
-        assert_eq!(app.directories[0].selected, false);
+        assert!(!app.directories[0].selected);
     }
 
     #[test]
@@ -1368,11 +1365,11 @@ mod tests {
     #[test]
     fn test_toggle_selection_mode() {
         let mut app = App::new(vec![], "test".to_string(), ".".to_string());
-        assert_eq!(app.selection_mode, false);
+        assert!(!app.selection_mode);
         app.toggle_selection_mode();
-        assert_eq!(app.selection_mode, true);
+        assert!(app.selection_mode);
         app.toggle_selection_mode();
-        assert_eq!(app.selection_mode, false);
+        assert!(!app.selection_mode);
     }
 
     #[test]
@@ -1561,7 +1558,7 @@ mod tests {
 
         // Add 6 directories (more than batch size)
         for i in 1..=6 {
-            app.add_discovered_directory(format!("dir{}", i));
+            app.add_discovered_directory(format!("dir{i}"));
         }
 
         // Should process first batch of 5
@@ -1581,7 +1578,7 @@ mod tests {
 
         // Add 3 directories (less than batch size)
         for i in 1..=3 {
-            app.add_discovered_directory(format!("dir{}", i));
+            app.add_discovered_directory(format!("dir{i}"));
         }
 
         // Process remaining
@@ -1652,7 +1649,7 @@ mod tests {
 
         // Add directories and process batch
         for i in 1..=5 {
-            app.add_discovered_directory(format!("dir{}", i));
+            app.add_discovered_directory(format!("dir{i}"));
         }
 
         // Verify all directories have correct initial state
@@ -1679,7 +1676,7 @@ mod tests {
 
         // Add 4 directories
         for i in 1..=4 {
-            app.add_discovered_directory(format!("dir{}", i));
+            app.add_discovered_directory(format!("dir{i}"));
         }
 
         // Should process first batch of 3

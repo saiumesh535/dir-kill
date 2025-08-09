@@ -1050,7 +1050,7 @@ fn display_directories_tui(
                             )
                         } else {
                             Span::styled(
-                                format!("Calculating... (0/{})", total_count),
+                                format!("Calculating... (0/{total_count})"),
                                 Style::default().fg(WARNING_COLOR),
                             )
                         }
@@ -1327,7 +1327,7 @@ mod tests {
         // Add multiple directories
         for i in 0..5 {
             app.directories.push(create_test_dir(
-                &format!("dir{}", i),
+                &format!("dir{i}"),
                 i as u64 * 100,
                 &format!("{} B", i * 100),
             ));
@@ -1442,7 +1442,7 @@ mod tests {
         // Add multiple directories
         for i in 0..3 {
             app.directories
-                .push(create_calculating_dir(&format!("dir{}", i)));
+                .push(create_calculating_dir(&format!("dir{i}")));
         }
 
         // Simulate size updates in different order
@@ -1609,7 +1609,7 @@ mod tests {
         assert_eq!(initial_calculated, 0);
 
         // Update first directory size
-        if 0 < app.directories.len() {
+        if !app.directories.is_empty() {
             app.directories[0].size = 1024;
             app.directories[0].formatted_size = "1.0 KB".to_string();
         }
@@ -2012,7 +2012,7 @@ mod tests {
             app.directories.push(DirectoryInfo {
                 last_modified: None,
                 formatted_last_modified: "Unknown".to_string(),
-                path: format!("dir{}", i),
+                path: format!("dir{i}"),
                 size: 0,
                 formatted_size: "Calculating...".to_string(),
                 selected: false,
@@ -2052,7 +2052,7 @@ mod tests {
             app.directories.push(DirectoryInfo {
                 last_modified: None,
                 formatted_last_modified: "Unknown".to_string(),
-                path: format!("dir{}", i),
+                path: format!("dir{i}"),
                 size: 0,
                 formatted_size: "Calculating...".to_string(),
                 selected: false,
@@ -2455,7 +2455,7 @@ mod tests {
 
         // Add 7 directories (more than 2 batches of 3)
         for i in 1..=7 {
-            app.add_discovered_directory(format!("dir{}", i));
+            app.add_discovered_directory(format!("dir{i}"));
         }
 
         // Should have processed first batch of 3 and second batch of 3
@@ -2472,7 +2472,7 @@ mod tests {
 
         // Verify all directories are in the list
         for i in 1..=7 {
-            assert_eq!(app.directories[i - 1].path, format!("dir{}", i));
+            assert_eq!(app.directories[i - 1].path, format!("dir{i}"));
         }
     }
 
@@ -2486,11 +2486,11 @@ mod tests {
 
         // Add many directories quickly to simulate discovery
         for i in 1..=50 {
-            app.add_discovered_directory(format!("dir{}", i));
+            app.add_discovered_directory(format!("dir{i}"));
         }
 
         // Should have processed directories in batches
-        assert!(app.directories.len() > 0);
+        assert!(!app.directories.is_empty());
         assert!(app.directories.len() <= 50);
 
         // Verify that directories are accessible and have correct initial state
@@ -2673,7 +2673,7 @@ mod tests {
         println!("🎯 MASSIVE PERFORMANCE IMPROVEMENT:");
         println!("   Optimized: {}μs", optimized_time.as_micros());
         println!("   Expensive: {}μs", expensive_time.as_micros());
-        println!("   Improvement: {}x faster", improvement_factor);
+        println!("   Improvement: {improvement_factor}x faster");
         println!(
             "   Time saved per frame: {}μs",
             expensive_time.as_micros() - optimized_time.as_micros()

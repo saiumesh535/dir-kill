@@ -458,7 +458,7 @@ pub fn calculate_directory_size_optimized(path: &Path) -> Result<u64> {
             if entry_path.is_file() {
                 // Use optimized disk size calculation
                 if let Ok(metadata) = entry.metadata() {
-                    total_size += entry_path.size_on_disk_fast(&metadata).unwrap_or_else(|_| metadata.len());
+                    total_size += entry_path.size_on_disk_fast(&metadata).unwrap_or(metadata.len());
                 }
             } else if entry_path.is_dir() {
                 total_size += calculate_directory_size_optimized(&entry_path)?;
@@ -485,7 +485,7 @@ pub fn calculate_directory_size_parallel(path: &Path) -> Result<u64> {
             if entry_path.is_file() {
                 // Use optimized disk size calculation
                 if let Ok(metadata) = entry.metadata() {
-                    entry_path.size_on_disk_fast(&metadata).unwrap_or_else(|_| metadata.len())
+                    entry_path.size_on_disk_fast(&metadata).unwrap_or(metadata.len())
                 } else {
                     0
                 }
@@ -520,7 +520,7 @@ pub fn calculate_directory_size_jwalk(path: &Path) -> Result<u64> {
                 if entry.file_type().is_file() {
                     if let Ok(metadata) = entry.metadata() {
                         // Use optimized disk size calculation
-                        total_size += entry.path().size_on_disk_fast(&metadata).unwrap_or_else(|_| metadata.len());
+                        total_size += entry.path().size_on_disk_fast(&metadata).unwrap_or(metadata.len());
                     }
                 }
             }
