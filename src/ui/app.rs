@@ -381,7 +381,8 @@ impl App {
     pub fn end_discovery_timing(&mut self) {
         if let Some(start_time) = self.discovery_start_time {
             self.discovery_end_time = Some(std::time::Instant::now());
-            self.discovery_duration = Some(self.discovery_end_time.unwrap().duration_since(start_time));
+            self.discovery_duration =
+                Some(self.discovery_end_time.unwrap().duration_since(start_time));
         }
     }
 
@@ -389,10 +390,13 @@ impl App {
     pub fn get_discovery_duration(&self) -> Option<std::time::Duration> {
         if let Some(duration) = self.discovery_duration {
             Some(duration)
-        } else if let (Some(start_time), Some(end_time)) = (self.discovery_start_time, self.discovery_end_time) {
+        } else if let (Some(start_time), Some(end_time)) =
+            (self.discovery_start_time, self.discovery_end_time)
+        {
             Some(end_time.duration_since(start_time))
         } else {
-            self.discovery_start_time.map(|start_time| std::time::Instant::now().duration_since(start_time))
+            self.discovery_start_time
+                .map(|start_time| std::time::Instant::now().duration_since(start_time))
         }
     }
 
@@ -409,13 +413,23 @@ impl App {
     pub fn update_total_completion_time(&mut self) {
         // Only update if we haven't already captured the completion time
         if self.total_completion_time.is_none() {
-            let calculated_count = self.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+            let calculated_count = self
+                .directories
+                .iter()
+                .filter(|dir| {
+                    matches!(
+                        dir.calculation_status,
+                        crate::fs::CalculationStatus::Completed
+                    )
+                })
+                .count();
             let total_count = self.directories.len();
-            
+
             // If all calculations are complete and we have a start time
             if calculated_count == total_count && total_count > 0 {
                 if let Some(start_time) = self.discovery_start_time {
-                    self.total_completion_time = Some(std::time::Instant::now().duration_since(start_time));
+                    self.total_completion_time =
+                        Some(std::time::Instant::now().duration_since(start_time));
                 }
             }
         }
@@ -443,7 +457,7 @@ impl App {
                 } else {
                     String::new()
                 };
-                
+
                 if self.total_discovered == 0 {
                     format!("Scanning directories...{timing_info}")
                 } else {
@@ -459,10 +473,19 @@ impl App {
             }
             DiscoveryStatus::Complete => {
                 // Include size calculation progress
-                let calculated_count = self.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+                let calculated_count = self
+                    .directories
+                    .iter()
+                    .filter(|dir| {
+                        matches!(
+                            dir.calculation_status,
+                            crate::fs::CalculationStatus::Completed
+                        )
+                    })
+                    .count();
                 let total_count = self.directories.len();
                 let (_, size_formatted) = self.get_current_total_size();
-                
+
                 if calculated_count == total_count && total_count > 0 {
                     // All calculations complete - show fixed total time and size
                     let total_timing = if let Some(completion_time) = self.total_completion_time {
@@ -472,8 +495,10 @@ impl App {
                     } else {
                         "scan: unknown".to_string()
                     };
-                    format!("Scan complete: {} directories found, {} total ({})", 
-                        self.total_discovered, size_formatted, total_timing)
+                    format!(
+                        "Scan complete: {} directories found, {} total ({})",
+                        self.total_discovered, size_formatted, total_timing
+                    )
                 } else if total_count == 0 {
                     // No directories found - just show discovery time
                     let discovery_timing = if let Some(duration) = self.get_discovery_duration() {
@@ -481,8 +506,10 @@ impl App {
                     } else {
                         "scan: unknown".to_string()
                     };
-                    format!("Scan complete: {} directories found ({})", 
-                        self.total_discovered, discovery_timing)
+                    format!(
+                        "Scan complete: {} directories found ({})",
+                        self.total_discovered, discovery_timing
+                    )
                 } else {
                     // Still calculating - show discovery time, size, and progress
                     let discovery_timing = if let Some(duration) = self.get_discovery_duration() {
@@ -490,8 +517,14 @@ impl App {
                     } else {
                         "scan: unknown".to_string()
                     };
-                    format!("Scan complete: {} directories found, {} total ({}, calculating sizes {}/{})", 
-                        self.total_discovered, size_formatted, discovery_timing, calculated_count, total_count)
+                    format!(
+                        "Scan complete: {} directories found, {} total ({}, calculating sizes {}/{})",
+                        self.total_discovered,
+                        size_formatted,
+                        discovery_timing,
+                        calculated_count,
+                        total_count
+                    )
                 }
             }
             DiscoveryStatus::Error(ref error) => {

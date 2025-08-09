@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, bail};
+use filesize::PathExt;
+use rayon::prelude::*;
 use regex::Regex;
 use std::fs;
 use std::path::Path;
-use filesize::PathExt;
-use rayon::prelude::*;
 
 /// Ignore patterns for directory filtering
 #[derive(Debug, Clone)]
@@ -333,7 +333,8 @@ pub fn find_directories_with_size_and_ignore(
         .map(|dir_path| {
             let path = Path::new(dir_path);
             // Use optimized size calculation with timing
-            let (size, calculation_time) = calculate_directory_size_with_timing(path).unwrap_or((0, std::time::Duration::ZERO));
+            let (size, calculation_time) = calculate_directory_size_with_timing(path)
+                .unwrap_or((0, std::time::Duration::ZERO));
             let formatted_size = format_size(size);
             // Get last modified time for the parent directory (not the matching directory itself)
             let parent_path = path.parent().unwrap_or(path);
@@ -458,7 +459,9 @@ pub fn calculate_directory_size_optimized(path: &Path) -> Result<u64> {
             if entry_path.is_file() {
                 // Use optimized disk size calculation
                 if let Ok(metadata) = entry.metadata() {
-                    total_size += entry_path.size_on_disk_fast(&metadata).unwrap_or(metadata.len());
+                    total_size += entry_path
+                        .size_on_disk_fast(&metadata)
+                        .unwrap_or(metadata.len());
                 }
             } else if entry_path.is_dir() {
                 total_size += calculate_directory_size_optimized(&entry_path)?;
@@ -476,16 +479,18 @@ pub fn calculate_directory_size_parallel(path: &Path) -> Result<u64> {
     }
 
     let entries: Vec<_> = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
-    
+
     let total_size: u64 = entries
         .par_iter()
         .map(|entry| {
             let entry_path = &entry.path();
-            
+
             if entry_path.is_file() {
                 // Use optimized disk size calculation
                 if let Ok(metadata) = entry.metadata() {
-                    entry_path.size_on_disk_fast(&metadata).unwrap_or(metadata.len())
+                    entry_path
+                        .size_on_disk_fast(&metadata)
+                        .unwrap_or(metadata.len())
                 } else {
                     0
                 }
@@ -507,7 +512,7 @@ pub fn calculate_directory_size_jwalk(path: &Path) -> Result<u64> {
     }
 
     let mut total_size = 0u64;
-    
+
     // Use jwalk for parallel directory traversal
     for entry in jwalk::WalkDir::new(path)
         .skip_hidden(false)
@@ -520,7 +525,10 @@ pub fn calculate_directory_size_jwalk(path: &Path) -> Result<u64> {
                 if entry.file_type().is_file() {
                     if let Ok(metadata) = entry.metadata() {
                         // Use optimized disk size calculation
-                        total_size += entry.path().size_on_disk_fast(&metadata).unwrap_or(metadata.len());
+                        total_size += entry
+                            .path()
+                            .size_on_disk_fast(&metadata)
+                            .unwrap_or(metadata.len());
                     }
                 }
             }

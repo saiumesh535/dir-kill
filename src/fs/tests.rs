@@ -752,9 +752,9 @@ fn test_find_directories_with_size_and_ignore() {
 #[cfg(test)]
 mod benchmarks {
     use super::*;
+    use std::fs;
     use std::time::Instant;
     use tempfile::TempDir;
-    use std::fs;
 
     /// Benchmark different directory size calculation methods
     #[test]
@@ -773,19 +773,28 @@ mod benchmarks {
         let start = Instant::now();
         let original_size = calculate_directory_size(dir_path).unwrap();
         let original_duration = start.elapsed();
-        println!("Original method: {} bytes in {:?}", original_size, original_duration);
+        println!(
+            "Original method: {} bytes in {:?}",
+            original_size, original_duration
+        );
 
         // Benchmark optimized method
         let start = Instant::now();
         let optimized_size = calculate_directory_size_optimized(dir_path).unwrap();
         let optimized_duration = start.elapsed();
-        println!("Optimized method: {} bytes in {:?}", optimized_size, optimized_duration);
+        println!(
+            "Optimized method: {} bytes in {:?}",
+            optimized_size, optimized_duration
+        );
 
         // Benchmark parallel method
         let start = Instant::now();
         let parallel_size = calculate_directory_size_parallel(dir_path).unwrap();
         let parallel_duration = start.elapsed();
-        println!("Parallel method: {} bytes in {:?}", parallel_size, parallel_duration);
+        println!(
+            "Parallel method: {} bytes in {:?}",
+            parallel_size, parallel_duration
+        );
 
         // Benchmark jwalk method
         let start = Instant::now();
@@ -794,24 +803,36 @@ mod benchmarks {
         println!("Jwalk method: {} bytes in {:?}", jwalk_size, jwalk_duration);
 
         // Verify optimized methods return consistent results (they may differ from original due to disk size vs logical size)
-        assert_eq!(optimized_size, parallel_size, "Optimized and parallel sizes should match");
-        assert_eq!(optimized_size, jwalk_size, "Optimized and jwalk sizes should match");
-        
+        assert_eq!(
+            optimized_size, parallel_size,
+            "Optimized and parallel sizes should match"
+        );
+        assert_eq!(
+            optimized_size, jwalk_size,
+            "Optimized and jwalk sizes should match"
+        );
+
         // Note: Original method uses logical file size, optimized methods use disk size
         // This is why they may differ - optimized methods are more accurate
 
         // Performance comparison
         println!("\n=== Performance Comparison ===");
         println!("Original method: {:?}", original_duration);
-        println!("Optimized method: {:?} ({:.1}x faster)", 
-                optimized_duration, 
-                original_duration.as_nanos() as f64 / optimized_duration.as_nanos() as f64);
-        println!("Parallel method: {:?} ({:.1}x faster)", 
-                parallel_duration, 
-                original_duration.as_nanos() as f64 / parallel_duration.as_nanos() as f64);
-        println!("Jwalk method: {:?} ({:.1}x faster)", 
-                jwalk_duration, 
-                original_duration.as_nanos() as f64 / jwalk_duration.as_nanos() as f64);
+        println!(
+            "Optimized method: {:?} ({:.1}x faster)",
+            optimized_duration,
+            original_duration.as_nanos() as f64 / optimized_duration.as_nanos() as f64
+        );
+        println!(
+            "Parallel method: {:?} ({:.1}x faster)",
+            parallel_duration,
+            original_duration.as_nanos() as f64 / parallel_duration.as_nanos() as f64
+        );
+        println!(
+            "Jwalk method: {:?} ({:.1}x faster)",
+            jwalk_duration,
+            original_duration.as_nanos() as f64 / jwalk_duration.as_nanos() as f64
+        );
 
         // Clean up
         temp_dir.close().unwrap();
@@ -821,12 +842,26 @@ mod benchmarks {
     fn create_test_directory_structure(root: &std::path::Path) {
         // Create main directories
         let dirs = vec![
-            "src", "docs", "tests", "assets", "config",
-            "src/components", "src/utils", "src/api",
-            "docs/api", "docs/user-guide", "docs/examples",
-            "tests/unit", "tests/integration", "tests/e2e",
-            "assets/images", "assets/fonts", "assets/icons",
-            "config/dev", "config/prod", "config/test"
+            "src",
+            "docs",
+            "tests",
+            "assets",
+            "config",
+            "src/components",
+            "src/utils",
+            "src/api",
+            "docs/api",
+            "docs/user-guide",
+            "docs/examples",
+            "tests/unit",
+            "tests/integration",
+            "tests/e2e",
+            "assets/images",
+            "assets/fonts",
+            "assets/icons",
+            "config/dev",
+            "config/prod",
+            "config/test",
         ];
 
         for dir in dirs {
@@ -838,14 +873,32 @@ mod benchmarks {
         let files = vec![
             ("README.md", "This is a test README file with some content."),
             ("src/main.rs", "fn main() { println!(\"Hello, world!\"); }"),
-            ("src/lib.rs", "pub fn hello() { println!(\"Hello from lib!\"); }"),
-            ("Cargo.toml", "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\""),
+            (
+                "src/lib.rs",
+                "pub fn hello() { println!(\"Hello from lib!\"); }",
+            ),
+            (
+                "Cargo.toml",
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"",
+            ),
             ("docs/README.md", "Documentation for the project."),
-            ("tests/test.rs", "#[test]\nfn test_function() {\n    assert!(true);\n}"),
-            ("config/settings.json", "{\n  \"debug\": true,\n  \"port\": 8080\n}"),
+            (
+                "tests/test.rs",
+                "#[test]\nfn test_function() {\n    assert!(true);\n}",
+            ),
+            (
+                "config/settings.json",
+                "{\n  \"debug\": true,\n  \"port\": 8080\n}",
+            ),
             ("assets/logo.png", "fake_png_data_here"),
-            ("src/components/button.rs", "pub struct Button {\n    pub text: String,\n}"),
-            ("src/utils/helpers.rs", "pub fn helper_function() {\n    // Helper logic\n}"),
+            (
+                "src/components/button.rs",
+                "pub struct Button {\n    pub text: String,\n}",
+            ),
+            (
+                "src/utils/helpers.rs",
+                "pub fn helper_function() {\n    // Helper logic\n}",
+            ),
         ];
 
         for (file_path, content) in files {

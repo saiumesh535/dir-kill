@@ -394,7 +394,16 @@ fn display_directories_tui(
             let total_count = app.directories.len();
             let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
             let total_formatted = fs::format_size(total_size);
-            let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+            let calculated_count = app
+                .directories
+                .iter()
+                .filter(|dir| {
+                    matches!(
+                        dir.calculation_status,
+                        crate::fs::CalculationStatus::Completed
+                    )
+                })
+                .count();
 
             // Enhanced Header with beautiful styling
             let header = Paragraph::new(vec![
@@ -664,7 +673,16 @@ fn display_directories_tui(
                 // Calculate total size
                 let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
                 let total_formatted = fs::format_size(total_size);
-                let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+                let calculated_count = app
+                    .directories
+                    .iter()
+                    .filter(|dir| {
+                        matches!(
+                            dir.calculation_status,
+                            crate::fs::CalculationStatus::Completed
+                        )
+                    })
+                    .count();
                 let total_count = app.directories.len();
 
                 // Show details in right panel
@@ -730,7 +748,10 @@ fn display_directories_tui(
                         // Add timing information if available
                         if let Some(calc_time) = &selected_dir.calculation_time {
                             Line::from(vec![
-                                Span::styled("Calculation Time: ", Style::default().fg(TEXT_SECONDARY)),
+                                Span::styled(
+                                    "Calculation Time: ",
+                                    Style::default().fg(TEXT_SECONDARY),
+                                ),
                                 Span::styled(
                                     fs::format_duration(calc_time),
                                     Style::default()
@@ -1028,15 +1049,20 @@ fn display_directories_tui(
                     Span::styled(" | Size: ", Style::default().fg(TEXT_SECONDARY)),
                     Span::styled(
                         total_formatted.clone(),
-                        Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(SUCCESS_COLOR)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(" | Calc: ", Style::default().fg(TEXT_SECONDARY)),
                     {
-                        let completed_calcs: Vec<_> = app.directories.iter()
+                        let completed_calcs: Vec<_> = app
+                            .directories
+                            .iter()
                             .filter_map(|dir| dir.calculation_time)
                             .collect();
                         if !completed_calcs.is_empty() {
-                            let avg_time = completed_calcs.iter().sum::<std::time::Duration>() / completed_calcs.len() as u32;
+                            let avg_time = completed_calcs.iter().sum::<std::time::Duration>()
+                                / completed_calcs.len() as u32;
                             let max_time = completed_calcs.iter().max().unwrap();
                             Span::styled(
                                 format!(
@@ -1169,7 +1195,12 @@ fn display_directories_text(pattern: &str, path: &str, ignore_patterns: &str) ->
         } else {
             String::new()
         };
-        println!("📁 {} ({}){}", clean_path(&dir.path), dir.formatted_size, timing_info);
+        println!(
+            "📁 {} ({}){}",
+            clean_path(&dir.path),
+            dir.formatted_size,
+            timing_info
+        );
 
         // Add page separator
         if (i + 1) % items_per_page == 0 && i < directories.len() - 1 {
@@ -1184,7 +1215,11 @@ fn display_directories_text(pattern: &str, path: &str, ignore_patterns: &str) ->
     let total_formatted = fs::format_size(total_size);
 
     println!();
-    println!("📊 Total: {} directories found, {} total size", directories.len(), total_formatted);
+    println!(
+        "📊 Total: {} directories found, {} total size",
+        directories.len(),
+        total_formatted
+    );
     println!("💡 Tip: Use a terminal that supports TUI for a better experience");
 
     Ok(())
@@ -1509,7 +1544,16 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 0);
 
-        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+        let calculated_count = app
+            .directories
+            .iter()
+            .filter(|dir| {
+                matches!(
+                    dir.calculation_status,
+                    crate::fs::CalculationStatus::Completed
+                )
+            })
+            .count();
         assert_eq!(calculated_count, 0);
     }
 
@@ -1557,7 +1601,16 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 6144); // 1024 + 2048 + 3072
 
-        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+        let calculated_count = app
+            .directories
+            .iter()
+            .filter(|dir| {
+                matches!(
+                    dir.calculation_status,
+                    crate::fs::CalculationStatus::Completed
+                )
+            })
+            .count();
         assert_eq!(calculated_count, 3);
     }
 
@@ -1733,7 +1786,16 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 3 * 1024 * 1024 * 1024); // 3 GB
 
-        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+        let calculated_count = app
+            .directories
+            .iter()
+            .filter(|dir| {
+                matches!(
+                    dir.calculation_status,
+                    crate::fs::CalculationStatus::Completed
+                )
+            })
+            .count();
         assert_eq!(calculated_count, 2);
     }
 
@@ -1780,7 +1842,16 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 1024); // Only the non-empty directory contributes
 
-        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+        let calculated_count = app
+            .directories
+            .iter()
+            .filter(|dir| {
+                matches!(
+                    dir.calculation_status,
+                    crate::fs::CalculationStatus::Completed
+                )
+            })
+            .count();
         assert_eq!(calculated_count, 3); // All directories have completed calculations
     }
 
@@ -2090,7 +2161,16 @@ mod tests {
         let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
         assert_eq!(total_size, 21504); // 1024 + 2048 + 3072 + 5120 + 4096 + 6144
 
-        let calculated_count = app.directories.iter().filter(|dir| matches!(dir.calculation_status, crate::fs::CalculationStatus::Completed)).count();
+        let calculated_count = app
+            .directories
+            .iter()
+            .filter(|dir| {
+                matches!(
+                    dir.calculation_status,
+                    crate::fs::CalculationStatus::Completed
+                )
+            })
+            .count();
         assert_eq!(calculated_count, 6);
     }
 
