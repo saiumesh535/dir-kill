@@ -39,4 +39,4 @@ jobs:
       - name: Check formatting
         run: |
           rustup component add rustfmt
-          cargo fmt -- --check 
+          cargo fmt -- --check

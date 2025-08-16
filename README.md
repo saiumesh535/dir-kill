@@ -14,7 +14,7 @@ dir-kill scans your file system to find directories that match specified pattern
 
 ```bash
 # Find all node_modules directories
-dir-kill ls <pattern>
+dir-kill ls <pattern> <path-directory (default: .)>
 ```
 
 ### Command Options
@@ -71,7 +71,7 @@ dir-kill ls target
 
 ## Installation
 
-## From Source
+### From Source
 
 ```bash
 # Clone and build
@@ -81,4 +81,15 @@ cargo build --release
 
 # Run directly
 cargo run -- ls node_modules
+```
+
+### From release
+
+1. Download the latest release from [here](https://github.com/saiumesh535/dir-kill/releases)
+2. chmod +x dir-kill
+3. mv dir-kill /usr/local/bin/dir-kill
+
+
+```bash
+dir-kill ls node_modules
 ```
