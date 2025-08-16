@@ -7,8 +7,15 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Padding, Paragraph},
 };
-use std::io;
 use rayon::prelude::*;
+use std::io;
+
+// Type alias for complex layout cache type to fix clippy warning
+type LayoutCache = std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<u32, (Vec<ratatui::layout::Rect>, Vec<ratatui::layout::Rect>)>,
+    >,
+>;
 
 // Enhanced Gruvbox Dark Theme Color Palette with additional beautiful colors
 // Based on https://github.com/morhetz/gruvbox with custom enhancements
@@ -88,9 +95,9 @@ fn get_calculation_status_icon(status: &crate::fs::CalculationStatus) -> &'stati
 
 // PERFORMANCE OPTIMIZATION: Cached strings to avoid repeated allocations
 lazy_static::lazy_static! {
-    static ref CACHED_STRINGS: std::sync::Mutex<std::collections::HashMap<String, String>> = 
+    static ref CACHED_STRINGS: std::sync::Mutex<std::collections::HashMap<String, String>> =
         std::sync::Mutex::new(std::collections::HashMap::new());
-    
+
     static ref STATIC_STRINGS: std::collections::HashMap<&'static str, &'static str> = {
         let mut map = std::collections::HashMap::new();
         map.insert("pattern_label", "Pattern: ");
@@ -250,20 +257,16 @@ fn display_directories_tui(
         }
     });
 
-    // Performance optimization: Cache for directory lookups
-    let mut directory_index_cache: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-
     // PERFORMANCE OPTIMIZATION: Smart frame rate limiting with event-driven rendering
     let mut last_frame_time = std::time::Instant::now();
     let mut last_activity_time = std::time::Instant::now();
     let mut frame_count = 0;
-    
+
     // Adaptive frame rates based on activity
     let active_frame_time = std::time::Duration::from_millis(16); // ~60 FPS during activity
-    let idle_frame_time = std::time::Duration::from_millis(100);  // ~10 FPS when idle
+    let idle_frame_time = std::time::Duration::from_millis(100); // ~10 FPS when idle
     let discovery_frame_time = std::time::Duration::from_millis(8); // ~120 FPS during discovery
-    
+
     // State tracking for smart rendering
     let mut needs_redraw = true;
     let mut last_discovery_count = 0;
@@ -271,9 +274,9 @@ fn display_directories_tui(
     let mut last_page = 0;
 
     // PERFORMANCE OPTIMIZATION: Object pool for frequently allocated strings
-    static STRING_POOL: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<String>>> = 
+    static STRING_POOL: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<String>>> =
         std::sync::OnceLock::new();
-    
+
     let string_pool = STRING_POOL.get_or_init(|| {
         let mut pool = std::collections::VecDeque::new();
         // Pre-allocate some common strings
@@ -284,12 +287,12 @@ fn display_directories_tui(
     });
 
     // PERFORMANCE OPTIMIZATION: Efficient directory index lookup with hash-based caching
-    static DIRECTORY_INDEX_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> = 
-        std::sync::OnceLock::new();
-    
-    let global_directory_cache = DIRECTORY_INDEX_CACHE.get_or_init(|| {
-        std::sync::Mutex::new(std::collections::HashMap::new())
-    });
+    static DIRECTORY_INDEX_CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, usize>>,
+    > = std::sync::OnceLock::new();
+
+    let global_directory_cache = DIRECTORY_INDEX_CACHE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
     // Main event loop with smart rendering
     loop {
@@ -297,24 +300,26 @@ fn display_directories_tui(
         let now = std::time::Instant::now();
         let time_since_last_frame = now.duration_since(last_frame_time);
         let time_since_last_activity = now.duration_since(last_activity_time);
-        
+
         // Check for state changes that require redraw
         let current_discovery_count = app.total_discovered;
         let current_selection_count = app.get_selected_count();
         let current_page = app.current_page;
-        
-        if current_discovery_count != last_discovery_count ||
-           current_selection_count != last_selection_count ||
-           current_page != last_page ||
-           app.is_discovering() ||
-           needs_redraw {
+
+        let should_redraw = current_discovery_count != last_discovery_count
+            || current_selection_count != last_selection_count
+            || current_page != last_page
+            || app.is_discovering()
+            || needs_redraw;
+
+        if should_redraw {
             needs_redraw = true;
             last_discovery_count = current_discovery_count;
             last_selection_count = current_selection_count;
             last_page = current_page;
             last_activity_time = now;
         }
-        
+
         // Determine target frame rate based on activity
         let target_frame_time = if app.is_discovering() && app.total_discovered > 0 {
             discovery_frame_time // High FPS during discovery for smooth progress
@@ -323,7 +328,7 @@ fn display_directories_tui(
         } else {
             idle_frame_time // Low FPS when idle to save CPU
         };
-        
+
         // Only render if enough time has passed or we need to redraw
         if !needs_redraw && time_since_last_frame < target_frame_time {
             // Sleep efficiently when idle
@@ -333,7 +338,7 @@ fn display_directories_tui(
             }
             continue;
         }
-        
+
         last_frame_time = now;
         frame_count += 1;
 
@@ -433,7 +438,8 @@ fn display_directories_tui(
 
             if should_calculate_sizes {
                 // PERFORMANCE OPTIMIZATION: Use thread pool instead of spawning new threads
-                static THREAD_POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+                static THREAD_POOL: std::sync::OnceLock<rayon::ThreadPool> =
+                    std::sync::OnceLock::new();
                 let thread_pool = THREAD_POOL.get_or_init(|| {
                     rayon::ThreadPoolBuilder::new()
                         .num_threads(4) // Limit to 4 threads to avoid overwhelming the system
@@ -473,7 +479,7 @@ fn display_directories_tui(
                                 fs::calculate_directory_size_jwalk(std::path::Path::new(&dir_path))
                                     .unwrap_or(0);
                             let formatted_size = fs::format_size(calculated_size);
-                            
+
                             (dir_path, calculated_size, formatted_size)
                         })
                         .collect();
@@ -492,21 +498,16 @@ fn display_directories_tui(
             continue;
         }
 
-        // Reset redraw flag after processing updates
-        needs_redraw = false;
-
         // PERFORMANCE OPTIMIZATION: Cache layout calculations
-        static LAYOUT_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, (Vec<ratatui::layout::Rect>, Vec<ratatui::layout::Rect>)>>> = 
-            std::sync::OnceLock::new();
-        
-        let layout_cache = LAYOUT_CACHE.get_or_init(|| {
-            std::sync::Mutex::new(std::collections::HashMap::new())
-        });
+        static LAYOUT_CACHE: LayoutCache = LayoutCache::new();
+
+        let layout_cache =
+            LAYOUT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
         // Calculate layout and items per page (with caching)
         let size = terminal.size()?;
         let layout_key = ((size.width as u32) << 16) | (size.height as u32);
-        
+
         let (chunks, main_panels) = {
             let mut cache = layout_cache.lock().unwrap();
             if let Some(cached) = cache.get(&layout_key) {
@@ -535,7 +536,7 @@ fn display_directories_tui(
                         .as_ref(),
                     )
                     .split(chunks[1]);
-                
+
                 let result = (chunks.to_vec(), main_panels.to_vec());
                 cache.insert(layout_key, result.clone());
                 result
@@ -560,138 +561,6 @@ fn display_directories_tui(
             })
             .count();
 
-        // PERFORMANCE OPTIMIZATION: Cache header widget construction
-        let discovery_status_num = match app.discovery_status {
-            app::DiscoveryStatus::NotStarted => 0,
-            app::DiscoveryStatus::Discovering => 1,
-            app::DiscoveryStatus::Complete => 2,
-            app::DiscoveryStatus::Error(_) => 3,
-        };
-        
-        let header_cache_key = format!("header_{}_{}_{}_{}", 
-            discovery_status_num, 
-            app.total_discovered, 
-            app.current_page, 
-            total_count
-        );
-        
-        let header = get_cached_string(&header_cache_key, || {
-            // Enhanced Header with beautiful styling and cached strings
-            let header_lines = vec![
-                Line::from(vec![Span::styled(
-                    "🔍 Directory Search Results",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                )]),
-                Line::from(vec![
-                    Span::styled(get_static_string("pattern_label"), Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled(
-                        format!("'{pattern}'"),
-                        Style::default()
-                            .fg(ACCENT_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(get_static_string("in_label"), Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled(
-                        format!("'{current_dir_display}'"),
-                        Style::default()
-                            .fg(SECONDARY_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(vec![match app.discovery_status {
-                    app::DiscoveryStatus::NotStarted => Span::styled(
-                        get_static_string("ready_label"),
-                        Style::default()
-                            .fg(TEXT_SECONDARY)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    app::DiscoveryStatus::Discovering => {
-                        if app.total_discovered == 0 {
-                            Span::styled(
-                                format!("{} {}", get_loading_frame(), get_static_string("scanning_label")),
-                                Style::default()
-                                    .fg(WARNING_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        } else {
-                            Span::styled(
-                                format!("{} {}", get_loading_frame(), app.get_discovery_progress()),
-                                Style::default()
-                                    .fg(WARNING_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        }
-                    }
-                    app::DiscoveryStatus::Complete => Span::styled(
-                        format!("✅ {}", app.get_discovery_progress()),
-                        Style::default()
-                            .fg(SUCCESS_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    app::DiscoveryStatus::Error(ref error) => Span::styled(
-                        format!("❌ {error}"),
-                        Style::default()
-                            .fg(ERROR_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                }]),
-                // Add dedicated timing line
-                Line::from(vec![
-                    Span::styled(get_static_string("scan_time_label"), Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled(
-                        app.get_formatted_discovery_duration(),
-                        Style::default()
-                            .fg(ACCENT_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("page_label"),
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(
-                            "{}{}{}",
-                            app.current_page + 1,
-                            get_static_string("of_label"),
-                            app.total_pages(items_per_page)
-                        ),
-                        Style::default()
-                            .fg(ACCENT_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(get_static_string("items_per_page_label"), Style::default().fg(TEXT_SECONDARY)),
-                ]),
-                if !app.directories.is_empty() {
-                    Line::from(vec![
-                        Span::styled(get_static_string("total_size_label"), Style::default().fg(TEXT_SECONDARY)),
-                        Span::styled(
-                            total_formatted.clone(),
-                            Style::default()
-                                .fg(HIGHLIGHT_COLOR)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" (", Style::default().fg(TEXT_SECONDARY)),
-                        Span::styled(
-                            format!("{calculated_count}/{total_count}{}", get_static_string("calculated_label")),
-                            Style::default().fg(ACCENT_COLOR),
-                        ),
-                        Span::styled(")", Style::default().fg(TEXT_SECONDARY)),
-                    ])
-                } else {
-                    Line::from(vec![])
-                },
-            ];
-            
-            // Convert to widget format for caching
-            format!("{:?}", header_lines)
-        });
-
         terminal.draw(|f| {
             // Set background color for the entire terminal
             f.render_widget(
@@ -708,14 +577,20 @@ fn display_directories_tui(
                         .add_modifier(Modifier::BOLD),
                 )]),
                 Line::from(vec![
-                    Span::styled(get_static_string("pattern_label"), Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        get_static_string("pattern_label"),
+                        Style::default().fg(TEXT_SECONDARY),
+                    ),
                     Span::styled(
                         format!("'{pattern}'"),
                         Style::default()
                             .fg(ACCENT_COLOR)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(get_static_string("in_label"), Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        get_static_string("in_label"),
+                        Style::default().fg(TEXT_SECONDARY),
+                    ),
                     Span::styled(
                         format!("'{current_dir_display}'"),
                         Style::default()
@@ -733,7 +608,11 @@ fn display_directories_tui(
                     app::DiscoveryStatus::Discovering => {
                         if app.total_discovered == 0 {
                             Span::styled(
-                                format!("{} {}", get_loading_frame(), get_static_string("scanning_label")),
+                                format!(
+                                    "{} {}",
+                                    get_loading_frame(),
+                                    get_static_string("scanning_label")
+                                ),
                                 Style::default()
                                     .fg(WARNING_COLOR)
                                     .add_modifier(Modifier::BOLD),
@@ -762,7 +641,10 @@ fn display_directories_tui(
                 }]),
                 // Add dedicated timing line
                 Line::from(vec![
-                    Span::styled(get_static_string("scan_time_label"), Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        get_static_string("scan_time_label"),
+                        Style::default().fg(TEXT_SECONDARY),
+                    ),
                     Span::styled(
                         app.get_formatted_discovery_duration(),
                         Style::default()
@@ -788,11 +670,17 @@ fn display_directories_tui(
                             .fg(ACCENT_COLOR)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(get_static_string("items_per_page_label"), Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        get_static_string("items_per_page_label"),
+                        Style::default().fg(TEXT_SECONDARY),
+                    ),
                 ]),
                 if !app.directories.is_empty() {
                     Line::from(vec![
-                        Span::styled(get_static_string("total_size_label"), Style::default().fg(TEXT_SECONDARY)),
+                        Span::styled(
+                            get_static_string("total_size_label"),
+                            Style::default().fg(TEXT_SECONDARY),
+                        ),
                         Span::styled(
                             total_formatted.clone(),
                             Style::default()
@@ -801,7 +689,10 @@ fn display_directories_tui(
                         ),
                         Span::styled(" (", Style::default().fg(TEXT_SECONDARY)),
                         Span::styled(
-                            format!("{calculated_count}/{total_count}{}", get_static_string("calculated_label")),
+                            format!(
+                                "{calculated_count}/{total_count}{}",
+                                get_static_string("calculated_label")
+                            ),
                             Style::default().fg(ACCENT_COLOR),
                         ),
                         Span::styled(")", Style::default().fg(TEXT_SECONDARY)),
@@ -915,7 +806,7 @@ fn display_directories_tui(
 
                         // PERFORMANCE OPTIMIZATION: Cache timing information
                         let timing_info = if let Some(calc_time) = &dir.calculation_time {
-                            get_cached_string(&format!("timing_{:?}", calc_time), || {
+                            get_cached_string(&format!("timing_{calc_time:?}"), || {
                                 format!(" ({}s)", fs::format_duration(calc_time))
                             })
                         } else {
@@ -1345,17 +1236,23 @@ fn display_directories_tui(
                         app.get_formatted_discovery_duration(),
                         Style::default().fg(ACCENT_COLOR),
                     ),
-                    Span::styled(get_static_string("size_info_label"), Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        get_static_string("size_info_label"),
+                        Style::default().fg(TEXT_SECONDARY),
+                    ),
                     Span::styled(
                         total_formatted.clone(),
                         Style::default()
                             .fg(SUCCESS_COLOR)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(get_static_string("calc_info_label"), Style::default().fg(TEXT_SECONDARY)),
+                    Span::styled(
+                        get_static_string("calc_info_label"),
+                        Style::default().fg(TEXT_SECONDARY),
+                    ),
                     {
                         // PERFORMANCE OPTIMIZATION: Cache calculation timing stats with better key
-                        let calc_stats_key = format!("calc_stats_{}_{}", total_count, calculated_count);
+                        let calc_stats_key = format!("calc_stats_{total_count}_{calculated_count}");
                         get_cached_string(&calc_stats_key, || {
                             let completed_calcs: Vec<_> = app
                                 .directories
@@ -1398,7 +1295,7 @@ fn display_directories_tui(
 
         // PERFORMANCE OPTIMIZATION: Mark for redraw on user input and clear string pool periodically
         needs_redraw = true;
-        
+
         // Clear string pool every 1000 frames to prevent memory bloat
         if frame_count % 1000 == 0 {
             let mut pool = string_pool.lock().unwrap();
