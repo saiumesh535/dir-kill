@@ -1,95 +1,121 @@
 # dir-kill 🗂️
 
-A Rust-based directory management tool that helps you find and manage directories. It provides terminal user interface for discovering directories matching specific patterns.
+A Rust-based directory management tool for finding, inspecting, and deleting directories that match a pattern. It launches an interactive terminal UI (TUI) with real-time scanning, size calculation, and multi-select deletion.
 
 ## What it does
 
-dir-kill scans your file system to find directories that match specified patterns. It's particularly useful for finding and deleting stale project directories like `node_modules`, `target`, `dist`, and other build artifacts to help clean up disk space.
+dir-kill scans your file system for directories matching a name pattern (for example `node_modules`, `target`, or `dist`). Results appear live in a Gruvbox-themed TUI with directory sizes, pagination, and keyboard-driven selection. You can delete individual directories or bulk-delete selected ones to reclaim disk space.
+
+On terminals that do not support the TUI (for example macOS Terminal.app or `TERM=dumb`), dir-kill falls back to plain-text output.
 
 <img src="./assets/dir-kill.png" alt="dir-kill screenshot" width="800" height="600" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
 
-## CLI Usage
+## Features
 
-### Basic Commands
+- **Real-time discovery** — directories stream in as they are found
+- **Background size calculation** — sizes are computed without blocking the UI
+- **Multi-select** — mark directories with Space, then delete in bulk
+- **Parallel deletion** — background workers remove directories with live progress
+- **Ignore patterns** — skip directories using comma-separated regex patterns
+- **Nested pattern avoidance** — does not recurse into matched directories (see below)
+- **Text fallback** — simple listing when the TUI is unavailable
+
+## Installation
+
+### From source
 
 ```bash
-# Find all node_modules directories
-dir-kill ls <pattern> <path-directory (default: .)>
+git clone https://github.com/saiumesh535/dir-kill.git
+cd dir-kill
+cargo install --path .
 ```
 
-### Command Options
+Or build without installing:
 
 ```bash
-dir-kill ls <pattern> [OPTIONS]
-
-OPTIONS:
-    -h, --help             Show help information
-    -i, --ignore <PATTERNS>    Comma-separated regex patterns for directories to ignore
+cargo build --release
+./target/release/dir-kill ls node_modules
 ```
+
+### From a release
+
+1. Download the latest release from [GitHub Releases](https://github.com/saiumesh535/dir-kill/releases)
+2. `chmod +x dir-kill`
+3. `mv dir-kill /usr/local/bin/dir-kill`
+
+## Usage
+
+```bash
+dir-kill ls <pattern> [path] [OPTIONS]
+```
+
+| Argument / Option | Description |
+|---|---|
+| `pattern` | Directory name to match (e.g. `node_modules`) |
+| `path` | Root directory to scan (default: `.`) |
+| `-i`, `--ignore <PATTERNS>` | Comma-separated regex patterns for directories to skip |
 
 ### Examples
 
 ```bash
-# Find node_modules directories
+# Find node_modules directories under the current directory
 dir-kill ls node_modules
 
-# Find node_modules directories but ignore .git and temp directories
+# Scan a specific path
+dir-kill ls target ~/projects
+
+# Ignore .git and temp directories
 dir-kill ls node_modules --ignore "\.git,temp"
 
-# Find target directories but ignore specific project directories
-dir-kill ls target --ignore "important-project,\.cargo"
-
-# Find dist directories with multiple ignore patterns
+# Multiple ignore patterns
 dir-kill ls dist -i "node_modules,\.git,backup"
 ```
 
-### Nested Pattern Avoidance
+## TUI keyboard shortcuts
 
-dir-kill automatically avoids nested pattern matches to prevent infinite recursion and redundant results. For example:
+| Key | Action |
+|---|---|
+| `↑` / `↓` / `j` / `k` | Move selection |
+| `←` / `→` | Previous / next page |
+| `Home` / `End` | Jump to first / last item |
+| `Space` | Toggle selection on current item |
+| `a` | Select all |
+| `d` | Deselect all |
+| `F` | Delete current directory |
+| `Ctrl+D` / `Ctrl+X` | Delete current directory |
+| `C` | Delete selected directories |
+| `q` / `Esc` | Quit |
 
-- When searching for `node_modules`, it won't scan inside existing `node_modules` directories
-- When searching for `dist`, it won't scan inside existing `dist` directories  
-- When searching for `target`, it won't scan inside existing `target` directories
+## Nested pattern avoidance
 
-This behavior:
-- **Prevents infinite recursion** in deeply nested directory structures
-- **Improves performance** by avoiding redundant scanning
-- **Reduces noise** in results by focusing on top-level matches
-- **Works automatically** for any pattern you search for
+dir-kill automatically skips scanning inside directories that already match the search pattern. This prevents redundant results and improves performance.
 
-**Examples:**
 ```bash
-# Will find /project/node_modules but skip /project/node_modules/some-package/node_modules
+# Finds /project/node_modules but not /project/node_modules/some-package/node_modules
 dir-kill ls node_modules
 
-# Will find /project/dist but skip /project/dist/build/dist  
+# Finds /project/dist but not /project/dist/build/dist
 dir-kill ls dist
-
-# Will find /project/target but skip /project/target/debug/target
-dir-kill ls target
 ```
 
-## Installation
-
-### From Source
+## Development
 
 ```bash
-# Clone and build
-git clone https://github.com/saiumesh535/dir-kill.git
-cd dir-kill
-cargo build --release
+# Run tests
+make test
+# or
+cargo test
 
-# Run directly
-cargo run -- ls node_modules
+# Build release binary
+make build
 ```
 
-### From release
+### Project structure
 
-1. Download the latest release from [here](https://github.com/saiumesh535/dir-kill/releases)
-2. chmod +x dir-kill
-3. mv dir-kill /usr/local/bin/dir-kill
-
-
-```bash
-dir-kill ls node_modules
+```
+src/
+├── main.rs   # Entry point
+├── cli/      # Command-line argument parsing (clap)
+├── fs/       # Directory scanning, sizing, and deletion
+└── ui/       # TUI rendering and interaction (ratatui)
 ```
