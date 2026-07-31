@@ -1,150 +1,60 @@
 use anyhow::Result;
 use ratatui::{
+    layout::Rect,
     Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Padding, Paragraph},
 };
-use rayon::prelude::*;
 use std::io;
-
-// Type alias for complex layout cache type to fix clippy warning
-type LayoutCache = std::sync::OnceLock<
-    std::sync::Mutex<
-        std::collections::HashMap<u32, (Vec<ratatui::layout::Rect>, Vec<ratatui::layout::Rect>)>,
-    >,
->;
-
-// Enhanced Gruvbox Dark Theme Color Palette with additional beautiful colors
-// Based on https://github.com/morhetz/gruvbox with custom enhancements
-const PRIMARY_COLOR: Color = Color::Rgb(131, 165, 152); // gruvbox-aqua
-const SECONDARY_COLOR: Color = Color::Rgb(250, 189, 47); // gruvbox-yellow
-const ACCENT_COLOR: Color = Color::Rgb(211, 134, 155); // gruvbox-pink
-const SUCCESS_COLOR: Color = Color::Rgb(184, 187, 38); // gruvbox-green
-const WARNING_COLOR: Color = Color::Rgb(250, 189, 47); // gruvbox-yellow
-const ERROR_COLOR: Color = Color::Rgb(251, 73, 52); // gruvbox-red
-const BACKGROUND_COLOR: Color = Color::Rgb(29, 32, 33); // Enhanced dark background
-const SURFACE_COLOR: Color = Color::Rgb(40, 40, 40); // Enhanced surface color
-const TEXT_PRIMARY: Color = Color::Rgb(235, 219, 178); // gruvbox-fg0 (light)
-const TEXT_SECONDARY: Color = Color::Rgb(189, 174, 147); // gruvbox-fg1 (medium)
-const SELECTION_BG: Color = Color::Rgb(131, 165, 152); // gruvbox-aqua selection background
-const SELECTION_FG: Color = Color::Rgb(29, 32, 33); // Dark text on selection
-const SELECTION_INDICATOR_COLOR: Color = Color::Rgb(184, 187, 38); // gruvbox-green for selection indicators
-// SELECTION_GLOW_COLOR removed - no longer needed with static colors
-
-// Additional beautiful colors for enhanced UI
-const BORDER_COLOR: Color = Color::Rgb(80, 73, 69); // Subtle border color
-const HIGHLIGHT_COLOR: Color = Color::Rgb(254, 128, 25); // Orange highlight
-const MUTED_COLOR: Color = Color::Rgb(146, 131, 116); // Muted text
 
 /// Remove ./ prefix from path if present
 fn clean_path(path: &str) -> &str {
     path.strip_prefix("./").unwrap_or(path)
 }
 
-/// Get static loading indicator (performance optimized)
-///
-/// PERFORMANCE NOTE: This was optimized from a time-based animation that called
-/// std::time::Instant::now().elapsed() every frame (60-120 times per second).
-/// The static indicator eliminates 600+ time calculations per second during discovery.
-fn get_loading_frame() -> &'static str {
-    "⠋" // Static loading indicator - no time calculation
-}
+#[cfg(test)]
+mod test_helpers {
+    use ratatui::style::Color;
 
-/// Get static directory icon with selection state (performance optimized)
-///
-/// PERFORMANCE NOTE: This was optimized from a time-based animation that called
-/// std::time::Instant::now().elapsed() every frame for every visible directory.
-/// The static icons eliminate hundreds of time calculations per second.
-fn get_directory_icon(selected: bool, _is_highlighted: bool) -> &'static str {
-    if selected {
-        "📂" // Static open directory for selected items
-    } else {
-        "📁" // Static closed directory for normal/highlighted items
+    pub const TEXT_SECONDARY: Color = Color::Rgb(189, 174, 147);
+    pub const SELECTION_INDICATOR_COLOR: Color = Color::Rgb(184, 187, 38);
+
+    pub fn get_loading_frame() -> &'static str {
+        "⠋"
     }
-}
 
-/// Get static selection indicator color (performance optimized)
-///
-/// PERFORMANCE NOTE: This was optimized from a time-based glow effect that called
-/// std::time::Instant::now().elapsed() every frame. The static color eliminates
-/// time calculations while maintaining visual distinction.
-fn get_selection_indicator_color(selected: bool) -> Color {
-    if selected {
-        SELECTION_INDICATOR_COLOR // Static selection color
-    } else {
-        TEXT_SECONDARY
+    pub fn get_directory_icon(selected: bool, _is_highlighted: bool) -> &'static str {
+        if selected {
+            "📂"
+        } else {
+            "📁"
+        }
     }
-}
 
-/// Get static calculation status icon (performance optimized)
-///
-/// PERFORMANCE NOTE: This was optimized from a time-based animation that called
-/// std::time::Instant::now().elapsed() every frame during calculation.
-/// The static icon eliminates time calculations while maintaining status indication.
-fn get_calculation_status_icon(status: &crate::fs::CalculationStatus) -> &'static str {
-    match status {
-        crate::fs::CalculationStatus::NotStarted => "⏳",
-        crate::fs::CalculationStatus::Calculating => "⠋", // Static calculating indicator
-        crate::fs::CalculationStatus::Completed => "",
-        crate::fs::CalculationStatus::Error(_) => "❌",
+    pub fn get_selection_indicator_color(selected: bool) -> Color {
+        if selected {
+            SELECTION_INDICATOR_COLOR
+        } else {
+            TEXT_SECONDARY
+        }
     }
-}
 
-// PERFORMANCE OPTIMIZATION: Cached strings to avoid repeated allocations
-lazy_static::lazy_static! {
-    static ref CACHED_STRINGS: std::sync::Mutex<std::collections::HashMap<String, String>> =
-        std::sync::Mutex::new(std::collections::HashMap::new());
-
-    static ref STATIC_STRINGS: std::collections::HashMap<&'static str, &'static str> = {
-        let mut map = std::collections::HashMap::new();
-        map.insert("pattern_label", "Pattern: ");
-        map.insert("in_label", " in ");
-        map.insert("scanning_label", "Scanning directories...");
-        map.insert("ready_label", "Ready to scan...");
-        map.insert("scan_time_label", "⏱️  Scan Time: ");
-        map.insert("page_label", "📄 Page ");
-        map.insert("of_label", " of ");
-        map.insert("items_per_page_label", " items per page");
-        map.insert("total_size_label", "💾 Total Size: ");
-        map.insert("calculated_label", " calculated");
-        map.insert("directories_label", "📂 Directories (Page ");
-        map.insert("nav_label", "⌨️  Nav: ");
-        map.insert("delete_label", "🗑️  Delete: ");
-        map.insert("found_label", "📊 Found: ");
-        map.insert("page_info_label", "📄 Page: ");
-        map.insert("scan_info_label", "⏱️  Scan: ");
-        map.insert("size_info_label", " | Size: ");
-        map.insert("calc_info_label", " | Calc: ");
-        map
-    };
-}
-
-/// Get cached or create string to avoid repeated allocations
-fn get_cached_string(key: &str, create_fn: impl FnOnce() -> String) -> String {
-    let mut cache = CACHED_STRINGS.lock().unwrap();
-    if let Some(cached) = cache.get(key) {
-        cached.clone()
-    } else {
-        let new_string = create_fn();
-        cache.insert(key.to_string(), new_string.clone());
-        new_string
+    pub fn get_calculation_status_icon(status: &crate::fs::CalculationStatus) -> &'static str {
+        match status {
+            crate::fs::CalculationStatus::NotStarted => "⏳",
+            crate::fs::CalculationStatus::Calculating => "⠋",
+            crate::fs::CalculationStatus::Completed => "",
+            crate::fs::CalculationStatus::Error(_) => "❌",
+        }
     }
-}
-
-/// Get static string from cache
-fn get_static_string(key: &str) -> &'static str {
-    STATIC_STRINGS.get(key).unwrap_or(&"")
 }
 
 pub mod app;
-pub mod list;
+pub mod view;
 
 #[allow(unused_imports)]
 use crate::fs::{self, DirectoryInfo};
-use app::App;
+use app::{App, DeleteConfirmAction, SortColumn};
+use view::RenderContext;
 
 /// Initialize the terminal for TUI mode
 pub fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -174,7 +84,17 @@ pub fn display_directories_with_scanning(
     pattern: &str,
     path: &str,
     ignore_patterns: &str,
+    no_tui: bool,
+    json: bool,
 ) -> Result<()> {
+    if json {
+        return display_directories_json(pattern, path, ignore_patterns);
+    }
+
+    if no_tui {
+        return display_directories_text(pattern, path, ignore_patterns);
+    }
+
     // Check if we're in a terminal that supports TUI
     let term = std::env::var("TERM").unwrap_or_default();
 
@@ -197,6 +117,38 @@ pub fn display_directories_with_scanning(
         // Use text mode for unsupported terminals
         display_directories_text(pattern, path, ignore_patterns)
     }
+}
+
+/// Output scan results as JSON (blocking until sizes are calculated)
+pub fn display_directories_json(pattern: &str, path: &str, ignore_patterns: &str) -> Result<()> {
+    let ignore_patterns = fs::IgnorePatterns::new(ignore_patterns)?;
+    let directories =
+        fs::find_directories_with_size_and_ignore(path, pattern, &ignore_patterns)?;
+
+    #[derive(serde::Serialize)]
+    struct JsonDir<'a> {
+        path: &'a str,
+        size: u64,
+        formatted_size: &'a str,
+        last_modified: Option<&'a str>,
+    }
+
+    let rows: Vec<JsonDir<'_>> = directories
+        .iter()
+        .map(|dir| JsonDir {
+            path: &dir.path,
+            size: dir.size,
+            formatted_size: &dir.formatted_size,
+            last_modified: if dir.formatted_last_modified == "Unknown" {
+                None
+            } else {
+                Some(dir.formatted_last_modified.as_str())
+            },
+        })
+        .collect();
+
+    println!("{}", serde_json::to_string_pretty(&rows)?);
+    Ok(())
 }
 
 /// Display directories in TUI mode with progressive loading
@@ -227,17 +179,24 @@ fn display_directories_tui(
     app.start_discovery_timing();
 
     // Pre-calculate expensive values that don't change
-    let current_dir_display = std::env::current_dir()
-        .unwrap_or_default()
-        .join(path)
-        .to_string_lossy()
-        .to_string();
+    let current_dir_display = crate::config::shorten_home_path(
+        &std::env::current_dir()
+            .unwrap_or_default()
+            .join(path)
+            .to_string_lossy(),
+    );
 
     // Channels for streaming discovery
     let (discovery_tx, discovery_rx) = std::sync::mpsc::channel::<fs::DiscoveryMessage>();
 
-    // Channels for size updates
-    let (size_tx, size_rx) = std::sync::mpsc::channel::<(String, u64, String)>();
+    // Channels for size updates: path, size, formatted size, parent mtime, formatted mtime
+    let (size_tx, size_rx) = std::sync::mpsc::channel::<(
+        String,
+        u64,
+        String,
+        Option<std::time::SystemTime>,
+        String,
+    )>();
 
     // Start streaming discovery in background
     let pattern_clone = pattern.to_string();
@@ -260,39 +219,32 @@ fn display_directories_tui(
     // PERFORMANCE OPTIMIZATION: Smart frame rate limiting with event-driven rendering
     let mut last_frame_time = std::time::Instant::now();
     let mut last_activity_time = std::time::Instant::now();
-    let mut frame_count = 0;
 
     // Adaptive frame rates based on activity
     let active_frame_time = std::time::Duration::from_millis(16); // ~60 FPS during activity
     let idle_frame_time = std::time::Duration::from_millis(100); // ~10 FPS when idle
-    let discovery_frame_time = std::time::Duration::from_millis(8); // ~120 FPS during discovery
+    let discovery_frame_time = std::time::Duration::from_millis(66); // ~15 FPS during discovery
 
     // State tracking for smart rendering
     let mut needs_redraw = true;
     let mut last_discovery_count = 0;
     let mut last_selection_count = 0;
     let mut last_page = 0;
+    let mut last_selected = 0;
+    let mut last_calculated_count = 0;
+    let mut cached_items_per_page = 20usize;
+    let mut last_viewport: Option<Rect> = None;
 
-    // PERFORMANCE OPTIMIZATION: Object pool for frequently allocated strings
-    static STRING_POOL: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<String>>> =
-        std::sync::OnceLock::new();
-
-    let string_pool = STRING_POOL.get_or_init(|| {
-        let mut pool = std::collections::VecDeque::new();
-        // Pre-allocate some common strings
-        for _ in 0..20 {
-            pool.push_back(String::with_capacity(64));
-        }
-        std::sync::Mutex::new(pool)
+    // Dedicated thread pool for directory size calculations (backpressured via App).
+    // Each size walk runs Serial on these workers — no nested rayon / busy-timeout.
+    static SIZE_THREAD_POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    let size_thread_pool = SIZE_THREAD_POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(app::max_concurrent_size_calcs())
+            .thread_name(|idx| format!("dir-kill-size-{idx}"))
+            .build()
+            .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap())
     });
-
-    // PERFORMANCE OPTIMIZATION: Efficient directory index lookup with hash-based caching
-    static DIRECTORY_INDEX_CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, usize>>,
-    > = std::sync::OnceLock::new();
-
-    let global_directory_cache = DIRECTORY_INDEX_CACHE
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
     // Main event loop with smart rendering
     loop {
@@ -305,51 +257,46 @@ fn display_directories_tui(
         let current_discovery_count = app.total_discovered;
         let current_selection_count = app.get_selected_count();
         let current_page = app.current_page;
+        let current_selected = app.selected;
+        let current_calculated_count = app.cached_calculated_count;
 
-        let should_redraw = current_discovery_count != last_discovery_count
+        let state_changed = current_discovery_count != last_discovery_count
             || current_selection_count != last_selection_count
             || current_page != last_page
-            || app.is_discovering()
-            || needs_redraw;
+            || current_selected != last_selected
+            || current_calculated_count != last_calculated_count;
 
-        if should_redraw {
+        if state_changed {
             needs_redraw = true;
             last_discovery_count = current_discovery_count;
             last_selection_count = current_selection_count;
             last_page = current_page;
+            last_selected = current_selected;
+            last_calculated_count = current_calculated_count;
             last_activity_time = now;
         }
 
         // Determine target frame rate based on activity
-        let target_frame_time = if app.is_discovering() && app.total_discovered > 0 {
-            discovery_frame_time // High FPS during discovery for smooth progress
-        } else if needs_redraw || time_since_last_activity < std::time::Duration::from_millis(500) {
-            active_frame_time // Normal FPS during activity
+        let target_frame_time = if state_changed || needs_redraw {
+            if app.is_discovering() {
+                discovery_frame_time
+            } else {
+                active_frame_time
+            }
+        } else if time_since_last_activity < std::time::Duration::from_millis(500) {
+            active_frame_time
         } else {
-            idle_frame_time // Low FPS when idle to save CPU
+            idle_frame_time
         };
 
-        // Only render if enough time has passed or we need to redraw
-        if !needs_redraw && time_since_last_frame < target_frame_time {
-            // Sleep efficiently when idle
-            let sleep_time = target_frame_time - time_since_last_frame;
-            if sleep_time > std::time::Duration::from_millis(1) {
-                std::thread::sleep(sleep_time);
-            }
-            continue;
-        }
-
         last_frame_time = now;
-        frame_count += 1;
 
         // Check for new discovery messages (process all available)
-        let mut discovery_messages_processed = 0;
         let mut has_discovery_updates = false;
         while let Ok(message) = discovery_rx.try_recv() {
             match message {
                 fs::DiscoveryMessage::DirectoryFound(path) => {
                     app.add_discovered_directory(path);
-                    discovery_messages_processed += 1;
                     has_discovery_updates = true;
                 }
                 fs::DiscoveryMessage::DiscoveryComplete => {
@@ -363,64 +310,26 @@ fn display_directories_tui(
                     has_discovery_updates = true;
                 }
             }
-
-            // Limit processing to avoid blocking UI (higher limit during discovery for better progress updates)
-            let max_discovery_messages = if app.is_discovering() {
-                20 // Process more messages during discovery for better progress updates
-            } else {
-                10 // Normal limit
-            };
-
-            if discovery_messages_processed >= max_discovery_messages {
-                break;
-            }
         }
 
         // Check for size updates (process all available)
         let mut size_updates_processed = 0;
         let mut has_size_updates = false;
-        while let Ok((path, size, formatted_size)) = size_rx.try_recv() {
-            // PERFORMANCE OPTIMIZATION: Use global directory cache for better performance
-            let index = {
-                let mut global_cache = global_directory_cache.lock().unwrap();
-                if let Some(&idx) = global_cache.get(&path) {
-                    if idx < app.directories.len() && app.directories[idx].path == path {
-                        idx
-                    } else {
-                        // Cache miss, fallback to linear search
-                        let idx = app
-                            .directories
-                            .iter()
-                            .position(|d| d.path == path)
-                            .unwrap_or(usize::MAX);
-                        if idx != usize::MAX {
-                            global_cache.insert(path.clone(), idx);
-                        }
-                        idx
-                    }
-                } else {
-                    // Not in cache, do linear search and cache result
-                    let idx = app
-                        .directories
-                        .iter()
-                        .position(|d| d.path == path)
-                        .unwrap_or(usize::MAX);
-                    if idx != usize::MAX {
-                        global_cache.insert(path.clone(), idx);
-                    }
-                    idx
-                }
-            };
-
-            if index != usize::MAX && index < app.directories.len() {
-                app.directories[index].size = size;
-                app.directories[index].formatted_size = formatted_size;
-                app.directories[index].calculation_status = crate::fs::CalculationStatus::Completed;
+        while let Ok((path, size, formatted_size, last_modified, formatted_last_modified)) =
+            size_rx.try_recv()
+        {
+            if app.apply_size_update(
+                &path,
+                size,
+                formatted_size,
+                last_modified,
+                formatted_last_modified,
+            ) {
                 has_size_updates = true;
             }
 
             size_updates_processed += 1;
-            if size_updates_processed >= 5 {
+            if size_updates_processed >= 32 {
                 break;
             }
         }
@@ -428,969 +337,306 @@ fn display_directories_tui(
         // Update total completion time if all calculations are done
         app.update_total_completion_time();
 
+        if app.clear_expired_toast() {
+            needs_redraw = true;
+        }
+
         // Process deletion messages
-        app.process_deletion_messages();
+        let has_deletion_updates = app.process_deletion_messages();
 
-        // Start size calculations for newly added directories (reduced frequency during discovery)
+        // Backpressured size calculations: one spawn per path so workers run in parallel
         if !app.directories.is_empty() {
-            // Only start size calculations if discovery is complete or we have a reasonable number of items
-            let should_calculate_sizes = !app.is_discovering() || app.directories.len() >= 10;
+            let paths_to_calculate = app.dequeue_size_calculations(
+                app::max_concurrent_size_calcs(),
+                cached_items_per_page,
+            );
 
-            if should_calculate_sizes {
-                // PERFORMANCE OPTIMIZATION: Use thread pool instead of spawning new threads
-                static THREAD_POOL: std::sync::OnceLock<rayon::ThreadPool> =
-                    std::sync::OnceLock::new();
-                let thread_pool = THREAD_POOL.get_or_init(|| {
-                    rayon::ThreadPoolBuilder::new()
-                        .num_threads(4) // Limit to 4 threads to avoid overwhelming the system
-                        .build()
-                        .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().build().unwrap())
-                });
-
-                // Collect paths that need size calculation
-                let paths_to_calculate: Vec<String> = app
-                    .directories
-                    .iter()
-                    .filter(|dir| {
-                        matches!(
-                            dir.calculation_status,
-                            crate::fs::CalculationStatus::NotStarted
-                        )
-                    })
-                    .take(3) // Process 3 at a time for better throughput
-                    .map(|dir| dir.path.clone())
-                    .collect();
-
-                // Update status to calculating for these directories
-                for path in &paths_to_calculate {
-                    if let Some(dir_mut) = app.directories.iter_mut().find(|d| d.path == *path) {
-                        dir_mut.calculation_status = crate::fs::CalculationStatus::Calculating;
-                    }
-                }
-
-                // Use thread pool for parallel size calculations
+            for dir_path in paths_to_calculate {
                 let size_tx_clone = size_tx.clone();
-                thread_pool.spawn(move || {
-                    let results: Vec<_> = paths_to_calculate
-                        .into_par_iter()
-                        .map(|dir_path| {
-                            // Use optimized size calculation for better performance
-                            let calculated_size =
-                                fs::calculate_directory_size_jwalk(std::path::Path::new(&dir_path))
-                                    .unwrap_or(0);
-                            let formatted_size = fs::format_size(calculated_size);
-
-                            (dir_path, calculated_size, formatted_size)
-                        })
-                        .collect();
-
-                    // Send all results at once to reduce channel overhead
-                    for (path, size, formatted_size) in results {
-                        let _ = size_tx_clone.send((path, size, formatted_size));
-                    }
+                size_thread_pool.spawn(move || {
+                    let path = std::path::Path::new(&dir_path);
+                    let calculated_size = fs::calculate_directory_size_jwalk(path).unwrap_or(0);
+                    let formatted_size = fs::format_size(calculated_size);
+                    let parent = path.parent().unwrap_or(path);
+                    let last_modified = fs::get_directory_last_modified(parent);
+                    let formatted_last_modified = last_modified
+                        .as_ref()
+                        .map(fs::format_last_modified)
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    let _ = size_tx_clone.send((
+                        dir_path,
+                        calculated_size,
+                        formatted_size,
+                        last_modified,
+                        formatted_last_modified,
+                    ));
                 });
             }
         }
 
-        // PERFORMANCE OPTIMIZATION: Only render if there are actual changes
-        if !needs_redraw && !has_discovery_updates && !has_size_updates {
-            // No changes, skip rendering to save CPU
+        if has_deletion_updates {
+            needs_redraw = true;
+        }
+
+        if has_discovery_updates || has_size_updates {
+            needs_redraw = true;
+            last_activity_time = std::time::Instant::now();
+        }
+
+        // Viewport-based pagination: recompute items per page when terminal size or layout changes
+        let terminal_size = terminal.size()?;
+        let viewport = Rect::new(0, 0, terminal_size.width, terminal_size.height);
+        let items_per_page =
+            view::items_per_page_for_viewport(viewport, app.show_details_panel);
+        if items_per_page != cached_items_per_page {
+            cached_items_per_page = items_per_page;
+            app.items_per_page = items_per_page;
+            app.clamp_pagination();
+            needs_redraw = true;
+        }
+        if last_viewport != Some(viewport) {
+            last_viewport = Some(viewport);
+            needs_redraw = true;
+        }
+
+        // Always poll keyboard — must not be skipped by render optimizations
+        let poll_timeout = if app.is_discovering()
+            || app.is_deleting()
+            || app.cached_calculated_count < app.directories.len()
+        {
+            std::time::Duration::from_millis(16)
+        } else {
+            std::time::Duration::from_millis(50)
+        };
+
+        if crossterm::event::poll(poll_timeout)? {
+            match crossterm::event::read()? {
+                crossterm::event::Event::Resize(_, _) => {
+                    needs_redraw = true;
+                }
+                crossterm::event::Event::Key(key_event) => {
+                app.items_per_page = cached_items_per_page;
+                if app.show_help {
+                    app.show_help = false;
+                    needs_redraw = true;
+                } else if app.delete_confirmation.is_some() {
+                    match key_event.code {
+                        crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
+                            let action = app.confirm_delete();
+                            match action {
+                                DeleteConfirmAction::Current => {
+                                    let _ = app.start_delete_current_directory();
+                                }
+                                DeleteConfirmAction::Selected => {
+                                    let _ = app.start_delete_selected_directories();
+                                }
+                            }
+                            needs_redraw = true;
+                            last_activity_time = std::time::Instant::now();
+                        }
+                        crossterm::event::KeyCode::Char('n')
+                        | crossterm::event::KeyCode::Char('N')
+                        | crossterm::event::KeyCode::Esc => {
+                            app.cancel_delete_confirmation();
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
+                } else if app.filter_input_active {
+                    match key_event.code {
+                        crossterm::event::KeyCode::Enter => {
+                            app.commit_filter();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Esc => {
+                            app.cancel_filter();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            app.pop_filter_char();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            app.push_filter_char(c);
+                            needs_redraw = true;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    let items_per_page = cached_items_per_page;
+                    let ctrl = key_event
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL);
+                    let shift = key_event
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::SHIFT);
+                    match key_event.code {
+                        crossterm::event::KeyCode::Char('q') => break,
+                        crossterm::event::KeyCode::Esc => {
+                            if app.show_details_panel {
+                                app.toggle_details_panel();
+                                needs_redraw = true;
+                            } else if app.has_active_filter() {
+                                app.clear_filter();
+                                needs_redraw = true;
+                            } else {
+                                break;
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('d')
+                        | crossterm::event::KeyCode::Char('D')
+                        | crossterm::event::KeyCode::Char('x')
+                        | crossterm::event::KeyCode::Char('X')
+                            if ctrl && shift =>
+                        {
+                            if app.get_selected_count() > 0 {
+                                app.request_delete_selected();
+                                needs_redraw = true;
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('d')
+                        | crossterm::event::KeyCode::Char('D')
+                        | crossterm::event::KeyCode::Char('x')
+                        | crossterm::event::KeyCode::Char('X')
+                            if ctrl =>
+                        {
+                            app.request_delete_current();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                            app.previous(items_per_page);
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                            app.next(items_per_page);
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Home => {
+                            app.select_first();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::End => {
+                            app.select_last();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Left => {
+                            app.previous_page(items_per_page);
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Right => {
+                            app.next_page(items_per_page);
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char(' ') => {
+                            app.toggle_current_selection();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('a') => {
+                            app.select_all();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('d') => {
+                            app.deselect_all();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('s') => {
+                            app.toggle_sort(SortColumn::Size);
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('p') => {
+                            app.toggle_sort(SortColumn::Path);
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('m') => {
+                            app.toggle_sort(SortColumn::Age);
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('/') => {
+                            app.begin_filter_input();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('i') | crossterm::event::KeyCode::Tab => {
+                            app.toggle_details_panel();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('?') => {
+                            app.toggle_help();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('o') => {
+                            let _ = app.open_selected_in_file_manager();
+                        }
+                        crossterm::event::KeyCode::Char('y')
+                            if key_event
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            if app.copy_selected_path().is_ok() {
+                                app.set_status_toast("Copied path to clipboard".to_string());
+                            }
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Delete => {
+                            if app.get_selected_count() > 0 {
+                                app.request_delete_selected();
+                            } else {
+                                app.request_delete_current();
+                            }
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('f') => {
+                            app.request_delete_current();
+                            needs_redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char('c') => {
+                            if app.get_selected_count() > 0 {
+                                app.request_delete_selected();
+                                needs_redraw = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                }
+                _ => {}
+            }
+        }
+
+        let should_draw = needs_redraw
+            || has_discovery_updates
+            || has_size_updates
+            || has_deletion_updates
+            || app.display_indices_dirty;
+
+        if app.display_indices_dirty {
+            app.rebuild_display_indices();
+            app.display_indices_dirty = false;
+            needs_redraw = true;
+        }
+
+        if !should_draw {
+            if !needs_redraw && time_since_last_frame < target_frame_time {
+                let sleep_time = target_frame_time - time_since_last_frame;
+                if sleep_time > std::time::Duration::from_millis(1) {
+                    std::thread::sleep(sleep_time);
+                }
+            }
             continue;
         }
 
-        // PERFORMANCE OPTIMIZATION: Cache layout calculations
-        static LAYOUT_CACHE: LayoutCache = LayoutCache::new();
-
-        let layout_cache =
-            LAYOUT_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
-        // Calculate layout and items per page (with caching)
-        let size = terminal.size()?;
-        let layout_key = ((size.width as u32) << 16) | (size.height as u32);
-
-        let (chunks, main_panels) = {
-            let mut cache = layout_cache.lock().unwrap();
-            if let Some(cached) = cache.get(&layout_key) {
-                (cached.0.clone(), cached.1.clone())
-            } else {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .margin(2)
-                    .constraints(
-                        [
-                            Constraint::Length(5), // Header
-                            Constraint::Min(0),    // Main content area
-                            Constraint::Length(5), // Footer
-                        ]
-                        .as_ref(),
-                    )
-                    .split(size);
-
-                let main_panels = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints(
-                        [
-                            Constraint::Percentage(70), // Directory list (70% width)
-                            Constraint::Percentage(30), // Details panel (30% width)
-                        ]
-                        .as_ref(),
-                    )
-                    .split(chunks[1]);
-
-                let result = (chunks.to_vec(), main_panels.to_vec());
-                cache.insert(layout_key, result.clone());
-                result
-            }
+        let mut render_ctx = RenderContext {
+            pattern,
+            search_root: &current_dir_display,
+            items_per_page: cached_items_per_page,
         };
 
-        let available_height = main_panels[0].height.saturating_sub(2);
-        let items_per_page = available_height.max(1) as usize;
+        terminal.draw(|f| view::render(f, &mut app, &mut render_ctx))?;
+        cached_items_per_page = render_ctx.items_per_page;
 
-        // PERFORMANCE OPTIMIZATION: Cache expensive calculations
-        let total_count = app.directories.len();
-        let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
-        let total_formatted = get_cached_string("total_size", || fs::format_size(total_size));
-        let calculated_count = app
-            .directories
-            .iter()
-            .filter(|dir| {
-                matches!(
-                    dir.calculation_status,
-                    crate::fs::CalculationStatus::Completed
-                )
-            })
-            .count();
-
-        terminal.draw(|f| {
-            // Set background color for the entire terminal
-            f.render_widget(
-                Paragraph::new("").style(Style::default().bg(BACKGROUND_COLOR)),
-                f.size(),
-            );
-
-            // Enhanced Header with beautiful styling and cached strings
-            let header = Paragraph::new(vec![
-                Line::from(vec![Span::styled(
-                    "🔍 Directory Search Results",
-                    Style::default()
-                        .fg(PRIMARY_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                )]),
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("pattern_label"),
-                        Style::default().fg(TEXT_SECONDARY),
-                    ),
-                    Span::styled(
-                        format!("'{pattern}'"),
-                        Style::default()
-                            .fg(ACCENT_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        get_static_string("in_label"),
-                        Style::default().fg(TEXT_SECONDARY),
-                    ),
-                    Span::styled(
-                        format!("'{current_dir_display}'"),
-                        Style::default()
-                            .fg(SECONDARY_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(vec![match app.discovery_status {
-                    app::DiscoveryStatus::NotStarted => Span::styled(
-                        get_static_string("ready_label"),
-                        Style::default()
-                            .fg(TEXT_SECONDARY)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    app::DiscoveryStatus::Discovering => {
-                        if app.total_discovered == 0 {
-                            Span::styled(
-                                format!(
-                                    "{} {}",
-                                    get_loading_frame(),
-                                    get_static_string("scanning_label")
-                                ),
-                                Style::default()
-                                    .fg(WARNING_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        } else {
-                            Span::styled(
-                                format!("{} {}", get_loading_frame(), app.get_discovery_progress()),
-                                Style::default()
-                                    .fg(WARNING_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        }
-                    }
-                    app::DiscoveryStatus::Complete => Span::styled(
-                        format!("✅ {}", app.get_discovery_progress()),
-                        Style::default()
-                            .fg(SUCCESS_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    app::DiscoveryStatus::Error(ref error) => Span::styled(
-                        format!("❌ {error}"),
-                        Style::default()
-                            .fg(ERROR_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                }]),
-                // Add dedicated timing line
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("scan_time_label"),
-                        Style::default().fg(TEXT_SECONDARY),
-                    ),
-                    Span::styled(
-                        app.get_formatted_discovery_duration(),
-                        Style::default()
-                            .fg(ACCENT_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("page_label"),
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(
-                            "{}{}{}",
-                            app.current_page + 1,
-                            get_static_string("of_label"),
-                            app.total_pages(items_per_page)
-                        ),
-                        Style::default()
-                            .fg(ACCENT_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        get_static_string("items_per_page_label"),
-                        Style::default().fg(TEXT_SECONDARY),
-                    ),
-                ]),
-                if !app.directories.is_empty() {
-                    Line::from(vec![
-                        Span::styled(
-                            get_static_string("total_size_label"),
-                            Style::default().fg(TEXT_SECONDARY),
-                        ),
-                        Span::styled(
-                            total_formatted.clone(),
-                            Style::default()
-                                .fg(HIGHLIGHT_COLOR)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(" (", Style::default().fg(TEXT_SECONDARY)),
-                        Span::styled(
-                            format!(
-                                "{calculated_count}/{total_count}{}",
-                                get_static_string("calculated_label")
-                            ),
-                            Style::default().fg(ACCENT_COLOR),
-                        ),
-                        Span::styled(")", Style::default().fg(TEXT_SECONDARY)),
-                    ])
-                } else {
-                    Line::from(vec![])
-                },
-            ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(BORDER_COLOR))
-                    .title_style(
-                        Style::default()
-                            .fg(PRIMARY_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .title("📊 Search Info"),
-            )
-            .style(Style::default().bg(SURFACE_COLOR));
-            f.render_widget(header, chunks[0]);
-
-            // Directory list or loading state
-            // Show directory list if we have items, or loading if empty
-            if !app.directories.is_empty() {
-                // PERFORMANCE OPTIMIZATION: Virtual scrolling for large lists
-                let visible_items = app.visible_items(items_per_page);
-                let list_items: Vec<ListItem> = visible_items
-                    .iter()
-                    .enumerate()
-                    .map(|(visible_index, dir)| {
-                        let global_index = app.current_page * items_per_page + visible_index;
-                        let is_selected = global_index == app.selected;
-
-                        // PERFORMANCE OPTIMIZATION: Cache expensive styling calculations
-                        let path_style = if is_selected {
-                            Style::default()
-                                .fg(SELECTION_FG)
-                                .bg(SELECTION_BG)
-                                .add_modifier(Modifier::BOLD)
-                        } else if dir.selected {
-                            Style::default()
-                                .fg(SELECTION_INDICATOR_COLOR)
-                                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                        } else {
-                            Style::default().fg(TEXT_PRIMARY)
-                        };
-
-                        // Create a formatted line with proper spacing and alignment
-                        let icon = get_directory_icon(dir.selected, is_selected);
-                        let selection_indicator = if dir.selected { "✓" } else { " " };
-                        let path = clean_path(&dir.path);
-
-                        // Calculate status icon
-                        let status_icon = match &dir.deletion_status {
-                            crate::fs::DeletionStatus::Normal => match dir.calculation_status {
-                                crate::fs::CalculationStatus::NotStarted
-                                | crate::fs::CalculationStatus::Calculating
-                                | crate::fs::CalculationStatus::Error(_) => {
-                                    get_calculation_status_icon(&dir.calculation_status)
-                                }
-                                crate::fs::CalculationStatus::Completed => "  ",
-                            },
-                            crate::fs::DeletionStatus::Deleting => "🔄",
-                            crate::fs::DeletionStatus::Deleted => "🗑️",
-                            crate::fs::DeletionStatus::Error(_) => "⚠️",
-                        };
-
-                        // PERFORMANCE OPTIMIZATION: Cache icon and selection styling
-                        let icon_style = Style::default()
-                            .fg(get_selection_indicator_color(dir.selected))
-                            .add_modifier(if dir.selected {
-                                Modifier::BOLD
-                            } else {
-                                Modifier::empty()
-                            });
-
-                        let selection_style = if dir.selected {
-                            Style::default()
-                                .fg(SELECTION_INDICATOR_COLOR)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(MUTED_COLOR)
-                        };
-
-                        let status_style = match &dir.deletion_status {
-                            crate::fs::DeletionStatus::Normal => match dir.calculation_status {
-                                crate::fs::CalculationStatus::NotStarted => {
-                                    Style::default().fg(MUTED_COLOR)
-                                }
-                                crate::fs::CalculationStatus::Calculating => Style::default()
-                                    .fg(WARNING_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                                crate::fs::CalculationStatus::Completed => {
-                                    Style::default().fg(SUCCESS_COLOR)
-                                }
-                                crate::fs::CalculationStatus::Error(_) => {
-                                    Style::default().fg(ERROR_COLOR)
-                                }
-                            },
-                            crate::fs::DeletionStatus::Deleting => Style::default()
-                                .fg(WARNING_COLOR)
-                                .add_modifier(Modifier::BOLD),
-                            crate::fs::DeletionStatus::Deleted => Style::default()
-                                .fg(SUCCESS_COLOR)
-                                .add_modifier(Modifier::BOLD),
-                            crate::fs::DeletionStatus::Error(_) => Style::default()
-                                .fg(ERROR_COLOR)
-                                .add_modifier(Modifier::BOLD),
-                        };
-
-                        // PERFORMANCE OPTIMIZATION: Cache timing information
-                        let timing_info = if let Some(calc_time) = &dir.calculation_time {
-                            get_cached_string(&format!("timing_{calc_time:?}"), || {
-                                format!(" ({}s)", fs::format_duration(calc_time))
-                            })
-                        } else {
-                            String::new()
-                        };
-
-                        ListItem::new(vec![Line::from(vec![
-                            Span::styled(format!("{icon} "), icon_style),
-                            Span::styled(format!("{selection_indicator} "), selection_style),
-                            Span::styled(path, path_style),
-                            Span::styled(timing_info, Style::default().fg(MUTED_COLOR)),
-                            Span::styled(" ", Style::default()),
-                            Span::styled(status_icon, status_style),
-                        ])])
-                    })
-                    .collect();
-
-                let list = List::new(list_items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(BORDER_COLOR))
-                            .title_style(
-                                Style::default()
-                                    .fg(PRIMARY_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                            .title(format!(
-                                "📂 Directories (Page {}/{})",
-                                app.current_page + 1,
-                                app.total_pages(items_per_page)
-                            ))
-                            .padding(Padding::new(1, 1, 0, 0)),
-                    )
-                    .style(Style::default().fg(TEXT_PRIMARY).bg(SURFACE_COLOR))
-                    .highlight_style(
-                        Style::default()
-                            .fg(SELECTION_FG)
-                            .bg(SELECTION_BG)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .highlight_symbol("▶ ")
-                    .repeat_highlight_symbol(true);
-                f.render_widget(list, main_panels[0]);
-
-                // Calculate total size
-                let total_size: u64 = app.directories.iter().map(|dir| dir.size).sum();
-                let total_formatted = fs::format_size(total_size);
-                let calculated_count = app
-                    .directories
-                    .iter()
-                    .filter(|dir| {
-                        matches!(
-                            dir.calculation_status,
-                            crate::fs::CalculationStatus::Completed
-                        )
-                    })
-                    .count();
-                let total_count = app.directories.len();
-
-                // Show details in right panel
-                if let Some(selected_dir) = app.get_selected_directory() {
-                    let details_text = vec![
-                        Line::from(vec![
-                            Span::styled("📁 ", Style::default().fg(SUCCESS_COLOR)),
-                            Span::styled(
-                                "Directory Details",
-                                Style::default()
-                                    .fg(TEXT_PRIMARY)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]),
-                        Line::from(vec![]), // Empty line
-                        Line::from(vec![Span::styled(
-                            "Path: ",
-                            Style::default().fg(TEXT_SECONDARY),
-                        )]),
-                        Line::from(vec![
-                            Span::styled("  ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                clean_path(&selected_dir.path),
-                                Style::default().fg(TEXT_PRIMARY),
-                            ),
-                        ]),
-                        Line::from(vec![]), // Empty line
-                        Line::from(vec![
-                            Span::styled("Size: ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                selected_dir.formatted_size.clone(),
-                                Style::default()
-                                    .fg(WARNING_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("  ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                format!("({} bytes)", selected_dir.size),
-                                Style::default().fg(TEXT_SECONDARY),
-                            ),
-                        ]),
-                        Line::from(vec![]), // Empty line
-                        Line::from(vec![
-                            Span::styled("Position: ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                format!("{} of {}", app.selected + 1, app.directories.len()),
-                                Style::default().fg(ACCENT_COLOR),
-                            ),
-                        ]),
-                        Line::from(vec![]), // Empty line
-                        Line::from(vec![
-                            Span::styled("Last Modified: ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                selected_dir.formatted_last_modified.clone(),
-                                Style::default()
-                                    .fg(MUTED_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]),
-                        Line::from(vec![]), // Empty line
-                        // Add timing information if available
-                        if let Some(calc_time) = &selected_dir.calculation_time {
-                            Line::from(vec![
-                                Span::styled(
-                                    "Calculation Time: ",
-                                    Style::default().fg(TEXT_SECONDARY),
-                                ),
-                                Span::styled(
-                                    fs::format_duration(calc_time),
-                                    Style::default()
-                                        .fg(ACCENT_COLOR)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                            ])
-                        } else {
-                            Line::from(vec![])
-                        },
-                        Line::from(vec![]), // Empty line
-                        Line::from(vec![
-                            Span::styled("📊 ", Style::default().fg(ACCENT_COLOR)),
-                            Span::styled(
-                                "Total Summary",
-                                Style::default()
-                                    .fg(TEXT_PRIMARY)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("Total Size: ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                total_formatted.clone(),
-                                Style::default()
-                                    .fg(ERROR_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("Calculated: ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                format!("{calculated_count}/{total_count}"),
-                                Style::default().fg(ACCENT_COLOR),
-                            ),
-                        ]),
-                        Line::from(vec![]), // Empty line
-                        Line::from(vec![
-                            Span::styled("🗑️ ", Style::default().fg(SUCCESS_COLOR)),
-                            Span::styled(
-                                "Freed Space",
-                                Style::default()
-                                    .fg(TEXT_PRIMARY)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]),
-                        Line::from(vec![
-                            Span::styled("Total Freed: ", Style::default().fg(TEXT_SECONDARY)),
-                            Span::styled(
-                                fs::format_size(app.get_total_freed_space()),
-                                Style::default()
-                                    .fg(SUCCESS_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]),
-                        if app.get_session_freed_space() > 0 {
-                            Line::from(vec![
-                                Span::styled("This Session: ", Style::default().fg(TEXT_SECONDARY)),
-                                Span::styled(
-                                    fs::format_size(app.get_session_freed_space()),
-                                    Style::default()
-                                        .fg(WARNING_COLOR)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                            ])
-                        } else {
-                            Line::from(vec![])
-                        },
-                        if !app.get_recent_freed_space_history().is_empty() {
-                            Line::from(vec![
-                                Span::styled("Recent: ", Style::default().fg(TEXT_SECONDARY)),
-                                Span::styled(
-                                    format!("{} items", app.get_recent_freed_space_history().len()),
-                                    Style::default().fg(ACCENT_COLOR),
-                                ),
-                            ])
-                        } else {
-                            Line::from(vec![])
-                        },
-                    ];
-
-                    let details_widget = Paragraph::new(details_text)
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_style(Style::default().fg(BORDER_COLOR))
-                                .title_style(
-                                    Style::default()
-                                        .fg(ACCENT_COLOR)
-                                        .add_modifier(Modifier::BOLD),
-                                )
-                                .title("📊 Details")
-                                .padding(Padding::new(1, 1, 0, 0)),
-                        )
-                        .style(Style::default().bg(SURFACE_COLOR));
-                    f.render_widget(details_widget, main_panels[1]);
-                }
-            } else {
-                // Show loading or no results found
-                let (widget_text, widget_title) = if app.is_discovering() {
-                    // Still discovering but no results yet
-                    (
-                        vec![
-                            Line::from(vec![
-                                Span::styled("🔍 ", Style::default().fg(PRIMARY_COLOR)),
-                                Span::styled(
-                                    "Scanning directories...",
-                                    Style::default()
-                                        .fg(TEXT_PRIMARY)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                            ]),
-                            Line::from(vec![
-                                Span::styled("   ", Style::default().fg(TEXT_SECONDARY)),
-                                Span::styled(
-                                    get_loading_frame().to_string(),
-                                    Style::default().fg(WARNING_COLOR),
-                                ),
-                            ]),
-                            Line::from(vec![
-                                Span::styled("   ", Style::default().fg(TEXT_SECONDARY)),
-                                Span::styled(
-                                    "Please wait while we search for directories...",
-                                    Style::default().fg(TEXT_SECONDARY),
-                                ),
-                            ]),
-                        ],
-                        "📁 Directory Search",
-                    )
-                } else {
-                    // Discovery complete but no results found
-                    (
-                        vec![
-                            Line::from(vec![
-                                Span::styled("❌ ", Style::default().fg(ERROR_COLOR)),
-                                Span::styled(
-                                    "No directories found",
-                                    Style::default()
-                                        .fg(TEXT_PRIMARY)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                            ]),
-                            Line::from(vec![
-                                Span::styled("   ", Style::default().fg(TEXT_SECONDARY)),
-                                Span::styled(
-                                    "Try a different pattern or path",
-                                    Style::default().fg(TEXT_SECONDARY),
-                                ),
-                            ]),
-                        ],
-                        "📁 Directory Search",
-                    )
-                };
-
-                let widget = Paragraph::new(widget_text)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(PRIMARY_COLOR))
-                            .title_style(
-                                Style::default()
-                                    .fg(PRIMARY_COLOR)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                            .title(widget_title),
-                    )
-                    .style(Style::default().bg(SURFACE_COLOR))
-                    .alignment(Alignment::Center);
-                f.render_widget(widget, chunks[1]);
-            }
-
-            // Footer with cached strings and optimized calculations
-            let footer = Paragraph::new(vec![
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("nav_label"),
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("↑/↓/j/k", Style::default().fg(ACCENT_COLOR)),
-                    Span::styled(" move, ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled("←/→", Style::default().fg(ACCENT_COLOR)),
-                    Span::styled(" pages, ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled("Home/End", Style::default().fg(ACCENT_COLOR)),
-                    Span::styled(", ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled("Space", Style::default().fg(ACCENT_COLOR)),
-                    Span::styled(" select, ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled("a/d", Style::default().fg(ACCENT_COLOR)),
-                    Span::styled(" all/none, ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled("q", Style::default().fg(ERROR_COLOR)),
-                    Span::styled(" quit", Style::default().fg(TEXT_SECONDARY)),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("delete_label"),
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled("F", Style::default().fg(ERROR_COLOR)),
-                    Span::styled(" current, ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled("Ctrl+D/X", Style::default().fg(ERROR_COLOR)),
-                    Span::styled(" current, ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled("C", Style::default().fg(ERROR_COLOR)),
-                    Span::styled(
-                        " selected (use Space to select)",
-                        Style::default().fg(TEXT_SECONDARY),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("found_label"),
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{} dirs", app.directories.len()),
-                        Style::default().fg(SUCCESS_COLOR),
-                    ),
-                    if app.get_selected_count() > 0 {
-                        // PERFORMANCE OPTIMIZATION: Cache selected count and size calculations
-                        let selected_info = get_cached_string("selected_info", || {
-                            format!(
-                                " | Selected: {} ({})",
-                                app.get_selected_count(),
-                                fs::format_size(app.get_selected_total_size())
-                            )
-                        });
-                        Span::styled(
-                            selected_info,
-                            Style::default()
-                                .fg(ACCENT_COLOR)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Span::styled("", Style::default().fg(SUCCESS_COLOR))
-                    },
-                    if app.is_discovering() {
-                        Span::styled(" (discovering...)", Style::default().fg(WARNING_COLOR))
-                    } else {
-                        Span::styled("", Style::default().fg(SUCCESS_COLOR))
-                    },
-                ]),
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("page_info_label"),
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(
-                            "{}{}{}",
-                            app.current_page + 1,
-                            get_static_string("of_label"),
-                            app.total_pages(items_per_page)
-                        ),
-                        Style::default().fg(ACCENT_COLOR),
-                    ),
-                    Span::styled(" | ", Style::default().fg(TEXT_SECONDARY)),
-                    Span::styled(
-                        "🎯 ",
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if app.directories.is_empty() {
-                            "None".to_string()
-                        } else {
-                            // PERFORMANCE OPTIMIZATION: Cache position string
-                            get_cached_string("position_string", || {
-                                format!("{} of {}: ", app.selected + 1, app.directories.len())
-                            })
-                        },
-                        Style::default().fg(PRIMARY_COLOR),
-                    ),
-                    Span::styled(
-                        if app.directories.is_empty() {
-                            "".to_string()
-                        } else {
-                            clean_path(&app.directories[app.selected].path).to_string()
-                        },
-                        Style::default()
-                            .fg(SELECTION_BG)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
-                // PERFORMANCE OPTIMIZATION: Cache expensive timing calculations
-                Line::from(vec![
-                    Span::styled(
-                        get_static_string("scan_info_label"),
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        app.get_formatted_discovery_duration(),
-                        Style::default().fg(ACCENT_COLOR),
-                    ),
-                    Span::styled(
-                        get_static_string("size_info_label"),
-                        Style::default().fg(TEXT_SECONDARY),
-                    ),
-                    Span::styled(
-                        total_formatted.clone(),
-                        Style::default()
-                            .fg(SUCCESS_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        get_static_string("calc_info_label"),
-                        Style::default().fg(TEXT_SECONDARY),
-                    ),
-                    {
-                        // PERFORMANCE OPTIMIZATION: Cache calculation timing stats with better key
-                        let calc_stats_key = format!("calc_stats_{total_count}_{calculated_count}");
-                        get_cached_string(&calc_stats_key, || {
-                            let completed_calcs: Vec<_> = app
-                                .directories
-                                .iter()
-                                .filter_map(|dir| dir.calculation_time)
-                                .collect();
-                            if !completed_calcs.is_empty() {
-                                let avg_time = completed_calcs.iter().sum::<std::time::Duration>()
-                                    / completed_calcs.len() as u32;
-                                let max_time = completed_calcs.iter().max().unwrap();
-                                format!(
-                                    "Avg: {}, Max: {} ({}/{})",
-                                    fs::format_duration(&avg_time),
-                                    fs::format_duration(max_time),
-                                    completed_calcs.len(),
-                                    total_count
-                                )
-                            } else {
-                                format!("Calculating... (0/{total_count})")
-                            }
-                        })
-                        .into()
-                    },
-                ]),
-            ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(BORDER_COLOR))
-                    .title_style(
-                        Style::default()
-                            .fg(WARNING_COLOR)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .title("⚙️  Controls"),
-            )
-            .style(Style::default().bg(SURFACE_COLOR));
-            f.render_widget(footer, chunks[2]);
-        })?;
-
-        // PERFORMANCE OPTIMIZATION: Mark for redraw on user input and clear string pool periodically
-        needs_redraw = true;
-
-        // Clear string pool every 1000 frames to prevent memory bloat
-        if frame_count % 1000 == 0 {
-            let mut pool = string_pool.lock().unwrap();
-            pool.clear();
-            // Re-add some pre-allocated strings
-            for _ in 0..20 {
-                pool.push_back(String::with_capacity(64));
-            }
-        }
-
-        // Handle input with shorter timeout to keep UI responsive
-        if crossterm::event::poll(std::time::Duration::from_millis(50))? {
-            if let crossterm::event::Event::Key(key_event) = crossterm::event::read()? {
-                match key_event.code {
-                    crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => break,
-                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                        app.previous(items_per_page);
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                        app.next(items_per_page);
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::Home => {
-                        app.select_first();
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::End => {
-                        app.select_last();
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::Left => {
-                        app.previous_page(items_per_page);
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::Right => {
-                        app.next_page(items_per_page);
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::Char(' ') => {
-                        app.toggle_current_selection();
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::Char('a') => {
-                        app.select_all();
-                        needs_redraw = true;
-                    }
-                    crossterm::event::KeyCode::Char('s') => {
-                        app.toggle_selection_mode();
-                        needs_redraw = true;
-                    }
-                    // Delete shortcuts - handle in order of specificity
-                    crossterm::event::KeyCode::Char('f') => {
-                        // Delete current directory (F key)
-                        if !app.directories.is_empty() {
-                            let _ = app.start_delete_current_directory();
-                            needs_redraw = true;
-                        }
-                    }
-                    // Handle 'C' key for selected directories
-                    crossterm::event::KeyCode::Char('c') => {
-                        // Delete selected directories (C key)
-                        if app.get_selected_count() > 0 {
-                            let _ = app.start_delete_selected_directories();
-                            needs_redraw = true;
-                        }
-                        // If no directories are selected, do nothing (user needs to select first)
-                    }
-                    // Handle Ctrl combinations (less specific)
-                    crossterm::event::KeyCode::Char('x') | crossterm::event::KeyCode::Char('d')
-                        if key_event
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        // Delete current directory (Ctrl+D or Ctrl+x)
-                        if !app.directories.is_empty() {
-                            let _ = app.start_delete_current_directory();
-                            needs_redraw = true;
-                        }
-                    }
-                    // Handle plain 'd' key (least specific)
-                    crossterm::event::KeyCode::Char('d')
-                        if !key_event
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        app.deselect_all();
-                        needs_redraw = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
+        needs_redraw = false;
     }
 
+    app.save_preferences();
     restore_terminal()?;
     Ok(())
 }
@@ -1463,6 +709,11 @@ fn display_directories_text(pattern: &str, path: &str, ignore_patterns: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
+    use super::test_helpers::{
+        get_calculation_status_icon, get_directory_icon, get_loading_frame,
+        get_selection_indicator_color, SELECTION_INDICATOR_COLOR, TEXT_SECONDARY,
+    };
 
     // Helper function to create DirectoryInfo for tests
     fn create_test_dir(path: &str, size: u64, formatted_size: &str) -> DirectoryInfo {
@@ -2157,7 +1408,8 @@ mod tests {
         };
         assert_eq!(summary, "");
         // One selected
-        app.directories[0].selected = true;
+        app.selected = 0;
+        app.select_current();
         let summary = if app.get_selected_count() > 0 {
             format!(
                 " | Selected: {} ({})",
@@ -2169,7 +1421,8 @@ mod tests {
         };
         assert_eq!(summary, " | Selected: 1 (100 B)");
         // Both selected
-        app.directories[1].selected = true;
+        app.selected = 1;
+        app.select_current();
         let summary = if app.get_selected_count() > 0 {
             format!(
                 " | Selected: {} ({})",
@@ -2536,13 +1789,14 @@ mod tests {
         assert_eq!(app.get_selected_directories().len(), 0);
 
         // Select first directory
-        app.directories[0].selected = true;
+        app.select_current(); // selects dir1 (index 0)
         assert_eq!(app.get_selected_count(), 1);
         assert_eq!(app.get_selected_directories().len(), 1);
         assert_eq!(app.get_selected_directories()[0].path, "dir1");
 
         // Select second directory
-        app.directories[1].selected = true;
+        app.selected = 1;
+        app.select_current(); // selects dir2 (index 1)
         assert_eq!(app.get_selected_count(), 2);
         assert_eq!(app.get_selected_directories().len(), 2);
 
@@ -2564,7 +1818,8 @@ mod tests {
         assert!(!app.directories[2].selected);
 
         // Test toggle functionality
-        app.toggle_current_selection(); // This should toggle the currently selected item (index 0)
+        app.selected = 0; // Move cursor to dir1
+        app.toggle_current_selection(); // This should toggle dir1
         assert!(!app.directories[0].selected); // Should now be false
         assert_eq!(app.get_selected_count(), 1); // Only dir2 should be selected
 

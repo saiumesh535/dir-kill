@@ -1,8 +1,14 @@
 use crate::fs::DirectoryInfo;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+
+/// Concurrent directory size jobs (each walk is serial; throughput comes from
+/// sizing many trees at once — typical `node_modules` cleanup workload).
+pub fn max_concurrent_size_calcs() -> usize {
+    crate::fs::scan_thread_count()
+}
 
 /// Application state for TUI
 pub struct App {
@@ -31,6 +37,72 @@ pub struct App {
     pub total_completion_time: Option<std::time::Duration>,
     // Parallel deletion system
     pub deletion_thread_pool: Option<DeletionThreadPool>,
+    // Size calculation backpressure and fast lookups
+    pub path_index: HashMap<String, usize>,
+    pub cached_total_size: u64,
+    pub cached_calculated_count: usize,
+    pub cached_total_formatted: String,
+    pub cached_selected_count: usize,
+    pub cached_selected_size: u64,
+    pub cached_in_flight_count: usize,
+    // Pre-computed lowercased paths for fast filter matching
+    lowercased_paths: Vec<String>,
+    cached_filter_query: String,
+    pub display_indices_dirty: bool,
+    // O(1) unsized directory lookup — indices of directories not yet calculated
+    unsized_indices: Vec<usize>,
+    // UI state
+    pub display_indices: Vec<usize>,
+    pub sort_column: SortColumn,
+    pub sort_direction: SortDirection,
+    pub filter_query: String,
+    pub applied_filter: String,
+    pub filter_input_active: bool,
+    pub show_details_panel: bool,
+    pub show_help: bool,
+    pub delete_confirmation: Option<DeleteConfirmation>,
+    pub status_toast: Option<StatusToast>,
+    pub user_sort_locked: bool,
+    pub auto_sort_by_size_done: bool,
+    pub auto_sort_by_size: bool,
+    pub items_per_page: usize,
+}
+
+/// Temporary status message shown in the status bar
+#[derive(Debug, Clone)]
+pub struct StatusToast {
+    pub message: String,
+    pub until: std::time::Instant,
+}
+
+/// Column used for sorting the results table
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    Size,
+    Path,
+    Age,
+}
+
+/// Sort direction for results
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+/// Pending destructive action awaiting confirmation
+#[derive(Debug, Clone)]
+pub struct DeleteConfirmation {
+    pub action: DeleteConfirmAction,
+    pub count: usize,
+    pub total_size: u64,
+    pub preview_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteConfirmAction {
+    Current,
+    Selected,
 }
 
 /// Status of directory discovery
@@ -115,7 +187,7 @@ pub struct DeletionTask {
 /// Thread pool for parallel deletion operations
 pub struct DeletionThreadPool {
     pub workers: Vec<JoinHandle<()>>,
-    pub work_queue: Arc<Mutex<VecDeque<DeletionTask>>>,
+    pub work_queue: Arc<(Mutex<VecDeque<DeletionTask>>, Condvar)>,
     pub sender: mpsc::Sender<DeletionMessage>,
     pub active_tasks: Arc<Mutex<usize>>,
     pub max_workers: usize,
@@ -124,7 +196,7 @@ pub struct DeletionThreadPool {
 impl DeletionThreadPool {
     /// Create a new deletion thread pool
     pub fn new(sender: mpsc::Sender<DeletionMessage>, max_workers: usize) -> Self {
-        let work_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let work_queue = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
         let active_tasks = Arc::new(Mutex::new(0));
 
         let mut workers = Vec::new();
@@ -154,15 +226,23 @@ impl DeletionThreadPool {
     /// Worker thread main loop
     fn worker_loop(
         _worker_id: usize,
-        work_queue: Arc<Mutex<VecDeque<DeletionTask>>>,
+        work_queue: Arc<(Mutex<VecDeque<DeletionTask>>, Condvar)>,
         sender: mpsc::Sender<DeletionMessage>,
         active_tasks: Arc<Mutex<usize>>,
     ) {
+        let (lock, cvar) = &*work_queue;
         loop {
-            // Try to get a task from the queue
+            // Wait for a task using Condvar (no busy-spin)
             let task = {
-                let mut queue = work_queue.lock().unwrap();
-                queue.pop_front()
+                let mut queue = lock.lock().unwrap();
+                loop {
+                    if let Some(task) = queue.pop_front() {
+                        break Some(task);
+                    }
+                    // Wait until notified or 100ms timeout (for graceful shutdown)
+                    let result = cvar.wait_timeout(queue, std::time::Duration::from_millis(100)).unwrap();
+                    queue = result.0;
+                }
             };
 
             if let Some(task) = task {
@@ -199,15 +279,15 @@ impl DeletionThreadPool {
                     *active -= 1;
                 }
             } else {
-                // No tasks available, sleep briefly
-                thread::sleep(std::time::Duration::from_millis(10));
+                // Timeout — check again (graceful shutdown path)
             }
         }
     }
 
     /// Add a deletion task to the queue with priority
     pub fn add_task(&self, task: DeletionTask) -> Result<(), std::io::Error> {
-        let mut queue = self.work_queue.lock().unwrap();
+        let (lock, cvar) = &*self.work_queue;
+        let mut queue = lock.lock().unwrap();
 
         // Insert based on priority (higher priority = lower enum value)
         let mut inserted = false;
@@ -223,6 +303,7 @@ impl DeletionThreadPool {
             queue.push_back(task);
         }
 
+        cvar.notify_one();
         Ok(())
     }
 
@@ -233,7 +314,7 @@ impl DeletionThreadPool {
 
     /// Get the number of queued tasks
     pub fn queued_task_count(&self) -> usize {
-        self.work_queue.lock().unwrap().len()
+        self.work_queue.0.lock().unwrap().len()
     }
 
     /// Check if the thread pool is idle
@@ -268,7 +349,22 @@ impl App {
         path: String,
         ignore_patterns: crate::fs::IgnorePatterns,
     ) -> Self {
-        Self {
+        let config = if cfg!(test) {
+            crate::config::Config::default()
+        } else {
+            crate::config::Config::load()
+        };
+        let sort_column = match config.sort_column.as_str() {
+            "size" => SortColumn::Size,
+            "age" => SortColumn::Age,
+            _ => SortColumn::Path,
+        };
+        let sort_direction = match config.sort_direction.as_str() {
+            "desc" => SortDirection::Desc,
+            _ => SortDirection::Asc,
+        };
+
+        let mut app = Self {
             directories,
             selected: 0,
             pattern,
@@ -283,14 +379,584 @@ impl App {
             freed_space_history: Vec::new(),
             discovery_status: DiscoveryStatus::NotStarted,
             pending_directories: Vec::new(),
-            batch_size: 5, // Default batch size for progressive loading
+            batch_size: 1, // Show matches immediately as they are discovered
             total_discovered: 0,
             discovery_start_time: None,
             discovery_end_time: None,
             discovery_duration: None,
             total_completion_time: None,
             deletion_thread_pool: None,
+            path_index: HashMap::new(),
+            cached_total_size: 0,
+            cached_calculated_count: 0,
+            cached_total_formatted: "0 B".to_string(),
+            cached_selected_count: 0,
+            cached_selected_size: 0,
+            cached_in_flight_count: 0,
+            lowercased_paths: Vec::new(),
+            cached_filter_query: String::new(),
+            display_indices_dirty: true,
+            unsized_indices: Vec::new(),
+            display_indices: Vec::new(),
+            sort_column,
+            sort_direction,
+            filter_query: String::new(),
+            applied_filter: String::new(),
+            filter_input_active: false,
+            show_details_panel: config.show_details_panel,
+            show_help: false,
+            delete_confirmation: None,
+            status_toast: None,
+            user_sort_locked: false,
+            auto_sort_by_size_done: false,
+            auto_sort_by_size: config.auto_sort_by_size,
+            items_per_page: 20,
+        };
+        app.rebuild_aggregates_from_directories();
+        app.rebuild_display_indices();
+        app
+    }
+
+    /// Rebuild path index and cached size totals from the directory list.
+    pub fn rebuild_aggregates_from_directories(&mut self) {
+        self.path_index.clear();
+        self.cached_total_size = 0;
+        self.cached_calculated_count = 0;
+        self.cached_selected_count = 0;
+        self.cached_selected_size = 0;
+        self.lowercased_paths.clear();
+        self.unsized_indices.clear();
+
+        for (idx, dir) in self.directories.iter().enumerate() {
+            self.path_index.insert(dir.path.clone(), idx);
+            self.lowercased_paths.push(dir.path.to_lowercase());
+            if matches!(
+                dir.calculation_status,
+                crate::fs::CalculationStatus::Completed
+            ) {
+                self.cached_total_size += dir.size;
+                self.cached_calculated_count += 1;
+            } else {
+                self.unsized_indices.push(idx);
+            }
+            if dir.selected {
+                self.cached_selected_count += 1;
+                self.cached_selected_size += dir.size;
+            }
         }
+
+        self.cached_total_formatted = crate::fs::format_size(self.cached_total_size);
+    }
+
+    /// Cached aggregate size stats for the UI (avoids per-frame O(n) scans).
+    pub fn size_stats(&self) -> (u64, &str, usize, usize) {
+        (
+            self.cached_total_size,
+            &self.cached_total_formatted,
+            self.cached_calculated_count,
+            self.directories.len(),
+        )
+    }
+
+    /// Apply a completed size calculation and update cached totals.
+    pub fn apply_size_update(
+        &mut self,
+        path: &str,
+        size: u64,
+        formatted_size: String,
+        last_modified: Option<std::time::SystemTime>,
+        formatted_last_modified: String,
+    ) -> bool {
+        let index = match self.path_index.get(path) {
+            Some(&idx) if idx < self.directories.len() && self.directories[idx].path == path => idx,
+            _ => return false,
+        };
+
+        let dir = &mut self.directories[index];
+        if matches!(
+            dir.calculation_status,
+            crate::fs::CalculationStatus::Completed
+        ) {
+            return false;
+        }
+
+        dir.size = size;
+        dir.formatted_size = formatted_size;
+        dir.last_modified = last_modified;
+        dir.formatted_last_modified = formatted_last_modified;
+        dir.calculation_status = crate::fs::CalculationStatus::Completed;
+        self.cached_total_size += size;
+        self.cached_calculated_count += 1;
+        self.cached_in_flight_count = self.cached_in_flight_count.saturating_sub(1);
+        self.cached_total_formatted = crate::fs::format_size(self.cached_total_size);
+
+        // Remove from unsized_indices (O(n) scan but rare — only happens once per dir)
+        if let Some(pos) = self.unsized_indices.iter().position(|&i| i == index) {
+            self.unsized_indices.swap_remove(pos);
+        }
+
+        if self.sort_column == SortColumn::Size || self.sort_column == SortColumn::Age {
+            self.display_indices_dirty = true;
+        }
+        self.maybe_auto_sort_by_size();
+        true
+    }
+
+    pub fn set_status_toast(&mut self, message: String) {
+        self.status_toast = Some(StatusToast {
+            message,
+            until: std::time::Instant::now() + std::time::Duration::from_secs(2),
+        });
+    }
+
+    pub fn active_toast_message(&self) -> Option<&str> {
+        self.status_toast.as_ref().and_then(|toast| {
+            if std::time::Instant::now() < toast.until {
+                Some(toast.message.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn clear_expired_toast(&mut self) -> bool {
+        if let Some(toast) = &self.status_toast {
+            if std::time::Instant::now() >= toast.until {
+                self.status_toast = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn filter_status_label(&self) -> Option<String> {
+        let filter_text = if self.filter_input_active {
+            self.filter_query.as_str()
+        } else if self.has_active_filter() {
+            self.applied_filter.as_str()
+        } else {
+            return None;
+        };
+        if filter_text.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "filter: \"{filter_text}\" · {}/{}",
+            self.view_len(),
+            self.directories.len()
+        ))
+    }
+
+    pub fn save_preferences(&self) {
+        let (sort_column, sort_direction) = match self.sort_column {
+            SortColumn::Size => ("size", match self.sort_direction {
+                SortDirection::Asc => "asc",
+                SortDirection::Desc => "desc",
+            }),
+            SortColumn::Path => ("path", match self.sort_direction {
+                SortDirection::Asc => "asc",
+                SortDirection::Desc => "desc",
+            }),
+            SortColumn::Age => ("age", match self.sort_direction {
+                SortDirection::Asc => "asc",
+                SortDirection::Desc => "desc",
+            }),
+        };
+        let config = crate::config::Config {
+            sort_column: sort_column.to_string(),
+            sort_direction: sort_direction.to_string(),
+            show_details_panel: self.show_details_panel,
+            auto_sort_by_size: self.auto_sort_by_size,
+        };
+        let _ = config.save();
+    }
+
+    fn maybe_auto_sort_by_size(&mut self) {
+        if !self.auto_sort_by_size
+            || self.auto_sort_by_size_done
+            || self.user_sort_locked
+            || self.cached_calculated_count < self.directories.len()
+            || self.directories.is_empty()
+        {
+            return;
+        }
+        self.sort_column = SortColumn::Size;
+        self.sort_direction = SortDirection::Desc;
+        self.auto_sort_by_size_done = true;
+        self.rebuild_display_indices();
+    }
+
+    pub fn selected_size_percent(&self) -> Option<f64> {
+        let dir = self.get_selected_directory()?;
+        if self.cached_total_size == 0 || dir.size == 0 {
+            return None;
+        }
+        Some((dir.size as f64 / self.cached_total_size as f64) * 100.0)
+    }
+
+    pub fn copy_selected_path(&self) -> Result<(), std::io::Error> {
+        let Some(dir) = self.get_selected_directory() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No directory selected",
+            ));
+        };
+        copy_to_clipboard(&dir.path)
+    }
+
+    /// Number of rows visible in the current filtered/sorted view
+    pub fn view_len(&self) -> usize {
+        self.display_indices.len()
+    }
+
+    /// Filter string currently driving the table (draft while editing, otherwise applied)
+    fn effective_filter(&self) -> &str {
+        if self.filter_input_active {
+            &self.filter_query
+        } else {
+            &self.applied_filter
+        }
+    }
+
+    pub fn has_active_filter(&self) -> bool {
+        !self.applied_filter.is_empty()
+    }
+
+    pub fn is_filtering(&self) -> bool {
+        !self.effective_filter().is_empty()
+    }
+
+    /// Rebuild filtered + sorted view indices after data or UI changes
+    pub fn rebuild_display_indices(&mut self) {
+        let query = self.effective_filter().to_lowercase();
+        let had_view = !self.display_indices.is_empty();
+        let selected_path = if had_view {
+            self.get_selected_directory().map(|dir| dir.path.clone())
+        } else {
+            None
+        };
+
+        self.cached_filter_query = query.clone();
+
+        let mut indices: Vec<usize> = self
+            .directories
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| {
+                query.is_empty()
+                    || self
+                        .lowercased_paths
+                        .get(*idx)
+                        .is_some_and(|lp| lp.contains(&query))
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        indices.sort_by(|&a, &b| {
+            let ordering = match self.sort_column {
+                SortColumn::Size => self.directories[a].size.cmp(&self.directories[b].size),
+                SortColumn::Path => natural_path_cmp(&self.directories[a].path, &self.directories[b].path),
+                SortColumn::Age => match (
+                    self.directories[a].last_modified,
+                    self.directories[b].last_modified,
+                ) {
+                    (Some(left), Some(right)) => left.cmp(&right),
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, None) => std::cmp::Ordering::Equal,
+                },
+            };
+            if self.sort_direction == SortDirection::Desc {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        });
+
+        self.display_indices = indices;
+
+        if self.display_indices.is_empty() {
+            self.selected = 0;
+            self.current_page = 0;
+            return;
+        }
+
+        if let Some(path) = selected_path {
+            if let Some(new_sel) = self
+                .display_indices
+                .iter()
+                .position(|&idx| self.directories[idx].path == path)
+            {
+                self.selected = new_sel;
+            } else {
+                self.selected = self
+                    .selected
+                    .min(self.display_indices.len().saturating_sub(1));
+            }
+        } else {
+            self.selected = self
+                .selected
+                .min(self.display_indices.len().saturating_sub(1));
+        }
+
+        if self.items_per_page > 0 {
+            self.current_page = self.selected / self.items_per_page;
+        }
+    }
+
+    pub fn toggle_sort(&mut self, column: SortColumn) {
+        self.user_sort_locked = true;
+        if self.sort_column == column {
+            self.sort_direction = match self.sort_direction {
+                SortDirection::Asc => SortDirection::Desc,
+                SortDirection::Desc => SortDirection::Asc,
+            };
+        } else {
+            self.sort_column = column;
+            self.sort_direction = match column {
+                SortColumn::Size => SortDirection::Desc,
+                SortColumn::Path => SortDirection::Asc,
+                SortColumn::Age => SortDirection::Desc,
+            };
+        }
+        self.rebuild_display_indices();
+        self.save_preferences();
+    }
+
+    pub fn sort_label(&self) -> String {
+        let col = match self.sort_column {
+            SortColumn::Size => "size",
+            SortColumn::Path => "path",
+            SortColumn::Age => "age",
+        };
+        let arrow = match self.sort_direction {
+            SortDirection::Asc => "↑",
+            SortDirection::Desc => "↓",
+        };
+        format!("sort: {col}{arrow}")
+    }
+
+    pub fn status_line_summary(&self) -> String {
+        let total = self.directories.len();
+        let calculated = self.cached_calculated_count;
+        let sizing = if calculated < total {
+            format!("sizing {calculated}/{total}")
+        } else if total > 0 {
+            format!(
+                "~{} releasable",
+                self.cached_total_formatted
+            )
+        } else {
+            String::new()
+        };
+        let timing = self.format_status_timing_label();
+
+        match self.discovery_status {
+            DiscoveryStatus::Discovering => {
+                if self.total_discovered == 0 {
+                    "scanning…".to_string()
+                } else {
+                    format!("{} found · {timing} · {sizing}", self.total_discovered)
+                }
+            }
+            DiscoveryStatus::Complete => {
+                if total == 0 {
+                    format!("0 found · {timing}")
+                } else {
+                    format!("{total} found · {timing} · {sizing}")
+                }
+            }
+            DiscoveryStatus::Error(ref err) => format!("error: {err}"),
+            DiscoveryStatus::NotStarted => "ready".to_string(),
+        }
+    }
+
+    pub fn sizing_progress_bar(&self, width: usize) -> String {
+        let total = self.directories.len();
+        if total == 0 {
+            return String::new();
+        }
+        let done = self.cached_calculated_count;
+        let filled = (done * width / total).min(width);
+        format!(
+            "[{}{}] {done}/{total}",
+            "█".repeat(filled),
+            "░".repeat(width - filled),
+        )
+    }
+
+    pub fn begin_filter_input(&mut self) {
+        if !self.filter_input_active {
+            self.filter_query = self.applied_filter.clone();
+        }
+        self.filter_input_active = true;
+    }
+
+    pub fn commit_filter(&mut self) {
+        self.applied_filter = self.filter_query.clone();
+        self.filter_input_active = false;
+        self.rebuild_display_indices();
+    }
+
+    pub fn cancel_filter(&mut self) {
+        self.filter_input_active = false;
+        if self.filter_query.is_empty() {
+            self.applied_filter.clear();
+            self.filter_query.clear();
+        } else {
+            self.filter_query = self.applied_filter.clone();
+        }
+        self.rebuild_display_indices();
+    }
+
+    pub fn clear_filter(&mut self) {
+        self.filter_query.clear();
+        self.applied_filter.clear();
+        self.filter_input_active = false;
+        self.rebuild_display_indices();
+    }
+
+    pub fn push_filter_char(&mut self, ch: char) {
+        self.filter_query.push(ch);
+        self.rebuild_display_indices();
+    }
+
+    pub fn pop_filter_char(&mut self) {
+        self.filter_query.pop();
+        self.rebuild_display_indices();
+    }
+
+    pub fn toggle_details_panel(&mut self) {
+        self.show_details_panel = !self.show_details_panel;
+        self.save_preferences();
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.show_help = !self.show_help;
+    }
+
+    pub fn request_delete_current(&mut self) {
+        let Some(dir) = self.get_selected_directory() else {
+            return;
+        };
+        self.delete_confirmation = Some(DeleteConfirmation {
+            action: DeleteConfirmAction::Current,
+            count: 1,
+            total_size: dir.size,
+            preview_paths: vec![dir.path.clone()],
+        });
+    }
+
+    pub fn request_delete_selected(&mut self) {
+        let selected: Vec<_> = self
+            .directories
+            .iter()
+            .filter(|dir| dir.selected)
+            .collect();
+        if selected.is_empty() {
+            return;
+        }
+        let total_size: u64 = selected.iter().map(|dir| dir.size).sum();
+        self.delete_confirmation = Some(DeleteConfirmation {
+            action: DeleteConfirmAction::Selected,
+            count: selected.len(),
+            total_size,
+            preview_paths: selected.iter().map(|dir| dir.path.clone()).collect(),
+        });
+    }
+
+    pub fn cancel_delete_confirmation(&mut self) {
+        self.delete_confirmation = None;
+    }
+
+    pub fn confirm_delete(&mut self) -> DeleteConfirmAction {
+        let action = self
+            .delete_confirmation
+            .as_ref()
+            .map(|c| c.action)
+            .unwrap_or(DeleteConfirmAction::Current);
+        self.delete_confirmation = None;
+        action
+    }
+
+    pub fn open_selected_in_file_manager(&self) -> Result<(), std::io::Error> {
+        let Some(dir) = self.get_selected_directory() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No directory selected",
+            ));
+        };
+        let path = std::path::Path::new(&dir.path);
+        let open_path = path.parent().unwrap_or(path);
+        open_path_in_file_manager(open_path)
+    }
+
+    /// Mark up to `max_concurrent` not-started directories as calculating.
+    /// Prefers visible (current page) rows, then falls back to `unsized_indices`.
+    pub fn dequeue_size_calculations(
+        &mut self,
+        max_concurrent: usize,
+        items_per_page: usize,
+    ) -> Vec<String> {
+        let slots = max_concurrent.saturating_sub(self.cached_in_flight_count);
+        if slots == 0 || self.unsized_indices.is_empty() {
+            return Vec::new();
+        }
+
+        if self.display_indices_dirty {
+            self.rebuild_display_indices();
+        }
+
+        let mut paths = Vec::with_capacity(slots);
+        let page_size = if items_per_page == 0 {
+            20
+        } else {
+            items_per_page
+        };
+        let start = self.current_page * page_size;
+        let end = std::cmp::min(start + page_size, self.display_indices.len());
+
+        // Prefer directories currently visible on the page
+        let mut preferred = Vec::new();
+        for &dir_idx in &self.display_indices[start..end] {
+            if matches!(
+                self.directories[dir_idx].calculation_status,
+                crate::fs::CalculationStatus::NotStarted
+            ) {
+                preferred.push(dir_idx);
+                if preferred.len() >= slots {
+                    break;
+                }
+            }
+        }
+
+        for dir_idx in preferred {
+            if let Some(pos) = self.unsized_indices.iter().position(|&i| i == dir_idx) {
+                self.unsized_indices.swap_remove(pos);
+            }
+            self.directories[dir_idx].calculation_status =
+                crate::fs::CalculationStatus::Calculating;
+            self.cached_in_flight_count += 1;
+            paths.push(self.directories[dir_idx].path.clone());
+        }
+
+        // Fill remaining slots from unsized_indices (LIFO)
+        while paths.len() < slots && !self.unsized_indices.is_empty() {
+            let idx = self.unsized_indices.pop().unwrap();
+            if idx < self.directories.len()
+                && matches!(
+                    self.directories[idx].calculation_status,
+                    crate::fs::CalculationStatus::NotStarted
+                )
+            {
+                self.directories[idx].calculation_status =
+                    crate::fs::CalculationStatus::Calculating;
+                self.cached_in_flight_count += 1;
+                paths.push(self.directories[idx].path.clone());
+            }
+        }
+
+        paths
     }
 
     /// Add a newly discovered directory to the pending list
@@ -316,41 +982,29 @@ impl App {
             .drain(..std::cmp::min(self.batch_size, self.pending_directories.len()))
             .collect();
 
-        // Convert to DirectoryInfo and add to main list
+        // Convert to DirectoryInfo and add to main list.
+        // Defer parent mtime to the size worker so discovery stays off the UI hot path.
         for dir_path in batch {
-            let path = std::path::Path::new(&dir_path);
-            let last_modified =
-                crate::fs::get_directory_last_modified(path.parent().unwrap_or(path));
-            let formatted_last_modified = last_modified
-                .as_ref()
-                .map(crate::fs::format_last_modified)
-                .unwrap_or_else(|| "Unknown".to_string());
-
             let directory_info = DirectoryInfo {
                 path: dir_path,
                 size: 0,
                 formatted_size: "Calculating...".to_string(),
-                last_modified,
-                formatted_last_modified,
+                last_modified: None,
+                formatted_last_modified: "…".to_string(),
                 selected: false,
                 deletion_status: crate::fs::DeletionStatus::Normal,
                 calculation_status: crate::fs::CalculationStatus::NotStarted,
                 calculation_time: None,
             };
 
+            let index = self.directories.len();
+            self.path_index
+                .insert(directory_info.path.clone(), index);
+            self.lowercased_paths.push(directory_info.path.to_lowercase());
+            self.unsized_indices.push(index);
             self.directories.push(directory_info);
         }
-
-        // Start size calculation for the newly added items
-        self.start_size_calculation_for_new_items();
-    }
-
-    /// Start size calculation for newly added directories
-    pub fn start_size_calculation_for_new_items(&mut self) {
-        // This will be implemented to start background size calculations
-        // for the most recently added items
-        // For now, we'll rely on the existing size calculation system
-        // that's already implemented in the UI module
+        self.display_indices_dirty = true;
     }
 
     /// Process any remaining pending directories (called when discovery is complete)
@@ -390,11 +1044,8 @@ impl App {
     pub fn get_discovery_duration(&self) -> Option<std::time::Duration> {
         if let Some(duration) = self.discovery_duration {
             Some(duration)
-        } else if let (Some(start_time), Some(end_time)) =
-            (self.discovery_start_time, self.discovery_end_time)
-        {
-            Some(end_time.duration_since(start_time))
         } else {
+            // Discovery in progress — return live elapsed time
             self.discovery_start_time
                 .map(|start_time| std::time::Instant::now().duration_since(start_time))
         }
@@ -409,28 +1060,55 @@ impl App {
         }
     }
 
+    /// Label for discovery-only timing (comparable to npkill "search completed")
+    pub fn format_discovery_timing_label(&self) -> String {
+        if let Some(duration) = self.discovery_duration {
+            format!("search: {}", crate::fs::format_duration(&duration))
+        } else if let Some(duration) = self.get_discovery_duration() {
+            format!("search: {}", crate::fs::format_duration(&duration))
+        } else {
+            "search: unknown".to_string()
+        }
+    }
+
+    /// Wall-clock elapsed since scan start (live while sizing, fixed when complete)
+    pub fn get_total_elapsed(&self) -> Option<std::time::Duration> {
+        if let Some(duration) = self.total_completion_time {
+            Some(duration)
+        } else {
+            self.discovery_start_time
+                .map(|start| std::time::Instant::now().duration_since(start))
+        }
+    }
+
+    pub fn format_total_timing_label(&self) -> String {
+        match self.get_total_elapsed() {
+            Some(duration) => format!(
+                "total: {}",
+                crate::fs::format_duration_in_seconds(&duration)
+            ),
+            None => "total: unknown".to_string(),
+        }
+    }
+
+    pub fn format_status_timing_label(&self) -> String {
+        format!(
+            "{} · {}",
+            self.format_discovery_timing_label(),
+            self.format_total_timing_label()
+        )
+    }
+
     /// Update total completion time if all calculations are done
     pub fn update_total_completion_time(&mut self) {
-        // Only update if we haven't already captured the completion time
         if self.total_completion_time.is_none() {
-            let calculated_count = self
-                .directories
-                .iter()
-                .filter(|dir| {
-                    matches!(
-                        dir.calculation_status,
-                        crate::fs::CalculationStatus::Completed
-                    )
-                })
-                .count();
             let total_count = self.directories.len();
-
-            // If all calculations are complete and we have a start time
-            if calculated_count == total_count && total_count > 0 {
+            if self.cached_calculated_count == total_count && total_count > 0 {
                 if let Some(start_time) = self.discovery_start_time {
                     self.total_completion_time =
                         Some(std::time::Instant::now().duration_since(start_time));
                 }
+                self.maybe_auto_sort_by_size();
             }
         }
     }
@@ -441,10 +1119,8 @@ impl App {
     }
 
     /// Get the current total size of all directories
-    pub fn get_current_total_size(&self) -> (u64, String) {
-        let total_size: u64 = self.directories.iter().map(|dir| dir.size).sum();
-        let formatted_size = crate::fs::format_size(total_size);
-        (total_size, formatted_size)
+    pub fn get_current_total_size(&self) -> (u64, &str) {
+        (self.cached_total_size, &self.cached_total_formatted)
     }
 
     /// Get discovery progress information
@@ -472,57 +1148,39 @@ impl App {
                 }
             }
             DiscoveryStatus::Complete => {
-                // Include size calculation progress
-                let calculated_count = self
-                    .directories
-                    .iter()
-                    .filter(|dir| {
-                        matches!(
-                            dir.calculation_status,
-                            crate::fs::CalculationStatus::Completed
-                        )
-                    })
-                    .count();
                 let total_count = self.directories.len();
                 let (_, size_formatted) = self.get_current_total_size();
 
-                if calculated_count == total_count && total_count > 0 {
-                    // All calculations complete - show fixed total time and size
-                    let total_timing = if let Some(completion_time) = self.total_completion_time {
-                        format!("scan: {}", crate::fs::format_duration(&completion_time))
-                    } else if let Some(duration) = self.get_discovery_duration() {
-                        format!("scan: {}", crate::fs::format_duration(&duration))
-                    } else {
-                        "scan: unknown".to_string()
-                    };
+                if self.cached_calculated_count == total_count && total_count > 0 {
+                    let discovery_timing = self.format_discovery_timing_label();
+                    let sizing_timing = self
+                        .total_completion_time
+                        .map(|duration| {
+                            format!(
+                                ", sizes: {}",
+                                crate::fs::format_duration(&duration.saturating_sub(
+                                    self.discovery_duration.unwrap_or(duration)
+                                ))
+                            )
+                        })
+                        .unwrap_or_default();
                     format!(
-                        "Scan complete: {} directories found, {} total ({})",
-                        self.total_discovered, size_formatted, total_timing
+                        "Search complete: {} directories, {} total ({}{})",
+                        self.total_discovered, size_formatted, discovery_timing, sizing_timing
                     )
                 } else if total_count == 0 {
-                    // No directories found - just show discovery time
-                    let discovery_timing = if let Some(duration) = self.get_discovery_duration() {
-                        format!("scan: {}", crate::fs::format_duration(&duration))
-                    } else {
-                        "scan: unknown".to_string()
-                    };
                     format!(
-                        "Scan complete: {} directories found ({})",
-                        self.total_discovered, discovery_timing
+                        "Search complete: {} directories found ({})",
+                        self.total_discovered,
+                        self.format_discovery_timing_label()
                     )
                 } else {
-                    // Still calculating - show discovery time, size, and progress
-                    let discovery_timing = if let Some(duration) = self.get_discovery_duration() {
-                        format!("scan: {}", crate::fs::format_duration(&duration))
-                    } else {
-                        "scan: unknown".to_string()
-                    };
                     format!(
-                        "Scan complete: {} directories found, {} total ({}, calculating sizes {}/{})",
+                        "Search complete: {} directories, {} total ({}; sizing {}/{})",
                         self.total_discovered,
                         size_formatted,
-                        discovery_timing,
-                        calculated_count,
+                        self.format_discovery_timing_label(),
+                        self.cached_calculated_count,
                         total_count
                     )
                 }
@@ -539,16 +1197,16 @@ impl App {
     }
 
     pub fn next(&mut self, items_per_page: usize) {
-        if !self.directories.is_empty() {
-            self.selected = (self.selected + 1) % self.directories.len();
+        if self.view_len() > 0 {
+            self.selected = (self.selected + 1) % self.view_len();
             self.update_selection_for_pagination(items_per_page);
         }
     }
 
     pub fn previous(&mut self, items_per_page: usize) {
-        if !self.directories.is_empty() {
+        if self.view_len() > 0 {
             self.selected = if self.selected == 0 {
-                self.directories.len() - 1
+                self.view_len() - 1
             } else {
                 self.selected - 1
             };
@@ -557,19 +1215,25 @@ impl App {
     }
 
     pub fn select_first(&mut self) {
-        if !self.directories.is_empty() {
+        if self.view_len() > 0 {
             self.selected = 0;
         }
     }
 
     pub fn select_last(&mut self) {
-        if !self.directories.is_empty() {
-            self.selected = self.directories.len() - 1;
+        if self.view_len() > 0 {
+            self.selected = self.view_len() - 1;
         }
     }
 
     pub fn get_selected_directory(&self) -> Option<&DirectoryInfo> {
-        self.directories.get(self.selected)
+        self.display_indices
+            .get(self.selected)
+            .and_then(|&idx| self.directories.get(idx))
+    }
+
+    fn selected_directory_index(&self) -> Option<usize> {
+        self.display_indices.get(self.selected).copied()
     }
 
     pub fn directory_count(&self) -> usize {
@@ -582,20 +1246,37 @@ impl App {
 
     // Pagination methods
     pub fn total_pages(&self, items_per_page: usize) -> usize {
-        if self.directories.is_empty() || items_per_page == 0 {
+        if self.display_indices.is_empty() || items_per_page == 0 {
             0
         } else {
-            (self.directories.len() - 1) / items_per_page + 1
+            (self.display_indices.len() - 1) / items_per_page + 1
+        }
+    }
+
+    pub fn clamp_pagination(&mut self) {
+        if self.items_per_page == 0 || self.display_indices.is_empty() {
+            self.current_page = 0;
+            self.selected = 0;
+            return;
+        }
+        let max_page = self.total_pages(self.items_per_page).saturating_sub(1);
+        if self.current_page > max_page {
+            self.current_page = max_page;
+        }
+        let max_sel = self.display_indices.len().saturating_sub(1);
+        if self.selected > max_sel {
+            self.selected = max_sel;
         }
     }
 
     pub fn visible_items(&self, items_per_page: usize) -> Vec<&DirectoryInfo> {
         let start = self.current_page * items_per_page;
-        let end = std::cmp::min(start + items_per_page, self.directories.len());
-        self.directories
+        let end = std::cmp::min(start + items_per_page, self.display_indices.len());
+        self.display_indices
             .get(start..end)
             .unwrap_or(&[])
             .iter()
+            .filter_map(|&idx| self.directories.get(idx))
             .collect()
     }
 
@@ -627,12 +1308,16 @@ impl App {
     }
 
     pub fn update_selection_for_pagination(&mut self, items_per_page: usize) {
-        // Ensure selected index stays within bounds
-        if self.selected >= self.directories.len() {
-            self.selected = self.directories.len().saturating_sub(1);
+        if self.view_len() == 0 {
+            self.selected = 0;
+            self.current_page = 0;
+            return;
         }
 
-        // Update current page based on selection
+        if self.selected >= self.view_len() {
+            self.selected = self.view_len().saturating_sub(1);
+        }
+
         self.current_page = self.selected / items_per_page;
     }
 
@@ -642,14 +1327,26 @@ impl App {
     }
 
     pub fn toggle_current_selection(&mut self) {
-        if !self.directories.is_empty() && self.selected < self.directories.len() {
-            self.directories[self.selected].selected = !self.directories[self.selected].selected;
+        if let Some(idx) = self.selected_directory_index() {
+            let dir = &mut self.directories[idx];
+            dir.selected = !dir.selected;
+            if dir.selected {
+                self.cached_selected_count += 1;
+                self.cached_selected_size += dir.size;
+            } else {
+                self.cached_selected_count -= 1;
+                self.cached_selected_size -= dir.size;
+            }
         }
     }
 
     pub fn select_all(&mut self) {
-        for dir in &mut self.directories {
-            dir.selected = true;
+        for &idx in &self.display_indices {
+            if !self.directories[idx].selected {
+                self.directories[idx].selected = true;
+                self.cached_selected_count += 1;
+                self.cached_selected_size += self.directories[idx].size;
+            }
         }
     }
 
@@ -657,22 +1354,32 @@ impl App {
         for dir in &mut self.directories {
             dir.selected = false;
         }
+        self.cached_selected_count = 0;
+        self.cached_selected_size = 0;
     }
 
     pub fn select_current(&mut self) {
-        if !self.directories.is_empty() && self.selected < self.directories.len() {
-            self.directories[self.selected].selected = true;
+        if let Some(idx) = self.selected_directory_index() {
+            if !self.directories[idx].selected {
+                self.directories[idx].selected = true;
+                self.cached_selected_count += 1;
+                self.cached_selected_size += self.directories[idx].size;
+            }
         }
     }
 
     pub fn deselect_current(&mut self) {
-        if !self.directories.is_empty() && self.selected < self.directories.len() {
-            self.directories[self.selected].selected = false;
+        if let Some(idx) = self.selected_directory_index() {
+            if self.directories[idx].selected {
+                self.directories[idx].selected = false;
+                self.cached_selected_count -= 1;
+                self.cached_selected_size -= self.directories[idx].size;
+            }
         }
     }
 
     pub fn get_selected_count(&self) -> usize {
-        self.directories.iter().filter(|dir| dir.selected).count()
+        self.cached_selected_count
     }
 
     pub fn get_selected_directories(&self) -> Vec<&DirectoryInfo> {
@@ -680,11 +1387,7 @@ impl App {
     }
 
     pub fn get_selected_total_size(&self) -> u64 {
-        self.directories
-            .iter()
-            .filter(|dir| dir.selected)
-            .map(|dir| dir.size)
-            .sum()
+        self.cached_selected_size
     }
 
     /// Delete selected directories using parallel thread pool (HIGH PERFORMANCE)
@@ -757,6 +1460,34 @@ impl App {
         self.deletion_progress.is_some()
     }
 
+    pub fn deletion_status_label(&self) -> Option<String> {
+        let progress = self.deletion_progress.as_ref()?;
+        let path = progress
+            .current_path
+            .strip_prefix("./")
+            .unwrap_or(&progress.current_path);
+        if progress.total_items > 1 {
+            Some(format!(
+                "Deleting {}/{}: {path}",
+                progress.completed_items.min(progress.total_items) + 1,
+                progress.total_items
+            ))
+        } else if path.is_empty() {
+            Some("Deleting…".to_string())
+        } else {
+            Some(format!("Deleting: {path}"))
+        }
+    }
+
+    fn mark_directory_deleting(&mut self, index: usize) {
+        if index < self.directories.len() {
+            self.directories[index].deletion_status = crate::fs::DeletionStatus::Deleting;
+            if let Some(progress) = &mut self.deletion_progress {
+                progress.current_path = self.directories[index].path.clone();
+            }
+        }
+    }
+
     /// Get total freed space
     pub fn get_total_freed_space(&self) -> u64 {
         self.total_freed_space
@@ -796,10 +1527,13 @@ impl App {
         self.deletion_thread_pool = Some(DeletionThreadPool::new(tx, 4));
     }
 
-    /// Process any pending deletion messages
-    pub fn process_deletion_messages(&mut self) {
+    /// Process any pending deletion messages. Returns true if UI state changed.
+    pub fn process_deletion_messages(&mut self) -> bool {
+        let mut changed = false;
+        let mut toast_message: Option<String> = None;
         if let Some(receiver) = &self.deletion_receiver {
             while let Ok(message) = receiver.try_recv() {
+                changed = true;
                 match message {
                     DeletionMessage::StartSingle { index, path: _ } => {
                         // Mark as deleting
@@ -818,19 +1552,37 @@ impl App {
                         }
                     }
                     DeletionMessage::Progress { index, status } => {
-                        // Update status
                         if index < self.directories.len() {
                             self.directories[index].deletion_status = status;
+                            if let Some(progress) = &mut self.deletion_progress {
+                                progress.current_path = self.directories[index].path.clone();
+                            }
                         }
                     }
                     DeletionMessage::Complete { results } => {
+                        let mut freed = 0u64;
+                        let mut deleted_count = 0usize;
                         // Process completion
                         for result in results {
                             if result.index < self.directories.len() {
                                 if result.success {
+                                    if let Some(progress) = &mut self.deletion_progress {
+                                        progress.completed_items += 1;
+                                        progress
+                                            .deleted_paths
+                                            .push(result.path.clone());
+                                    }
                                     // Track freed space
                                     let freed_size = self.directories[result.index].size;
                                     self.total_freed_space += freed_size;
+                                    freed += freed_size;
+                                    deleted_count += 1;
+                                    self.cached_total_size =
+                                        self.cached_total_size.saturating_sub(freed_size);
+                                    self.cached_calculated_count =
+                                        self.cached_calculated_count.saturating_sub(1);
+                                    self.cached_total_formatted =
+                                        crate::fs::format_size(self.cached_total_size);
 
                                     // Add to history
                                     self.freed_space_history.push(FreedSpaceEntry {
@@ -847,6 +1599,17 @@ impl App {
                                     self.directories[result.index].deletion_status =
                                         crate::fs::DeletionStatus::Deleted;
                                 } else {
+                                    if let Some(progress) = &mut self.deletion_progress {
+                                        progress.completed_items += 1;
+                                        progress.errors.push(format!(
+                                            "{}: {}",
+                                            result.path,
+                                            result
+                                                .error
+                                                .as_deref()
+                                                .unwrap_or("Unknown error")
+                                        ));
+                                    }
                                     self.directories[result.index].deletion_status =
                                         crate::fs::DeletionStatus::Error(
                                             result
@@ -856,19 +1619,40 @@ impl App {
                                 }
                             }
                         }
+                        if deleted_count > 0 {
+                            let releasable = self.cached_total_formatted.clone();
+                            toast_message = Some(format!(
+                                "Deleted {} · freed {} · ~{} releasable",
+                                if deleted_count == 1 {
+                                    "1 directory".to_string()
+                                } else {
+                                    format!("{deleted_count} directories")
+                                },
+                                crate::fs::format_size(freed),
+                                releasable
+                            ));
+                        } else if let Some(progress) = &self.deletion_progress {
+                            if let Some(err) = progress.errors.first() {
+                                toast_message = Some(format!("Delete failed: {err}"));
+                            }
+                        }
                         // Clear progress
                         self.deletion_progress = None;
                     }
                 }
             }
         }
+        if let Some(message) = toast_message {
+            self.set_status_toast(message);
+        }
+        changed
     }
-
-    /// Start background deletion of current directory
     pub fn start_delete_current_directory(&mut self) -> Result<(), std::io::Error> {
         if let Some(dir) = self.get_selected_directory() {
             let path = dir.path.clone();
-            let index = self.selected;
+            let Some(index) = self.selected_directory_index() else {
+                return Ok(());
+            };
 
             // Initialize channel if not already done
             if self.deletion_sender.is_none() {
@@ -885,6 +1669,8 @@ impl App {
                 freed_space: 0,
                 freed_space_this_session: self.total_freed_space,
             });
+
+            self.mark_directory_deleting(index);
 
             // Send start message
             if let Some(sender) = &self.deletion_sender {
@@ -934,6 +1720,11 @@ impl App {
             return Ok(());
         }
 
+        let paths: Vec<String> = selected_indices
+            .iter()
+            .map(|&i| self.directories[i].path.clone())
+            .collect();
+
         // Initialize channel if not already done
         if self.deletion_sender.is_none() {
             self.init_deletion_channel();
@@ -943,18 +1734,16 @@ impl App {
         self.deletion_progress = Some(DeletionProgress {
             total_items: selected_indices.len(),
             completed_items: 0,
-            current_path: String::new(),
+            current_path: paths.first().cloned().unwrap_or_default(),
             deleted_paths: Vec::new(),
             errors: Vec::new(),
             freed_space: 0,
             freed_space_this_session: self.total_freed_space,
         });
 
-        // Collect paths
-        let paths: Vec<String> = selected_indices
-            .iter()
-            .map(|&i| self.directories[i].path.clone())
-            .collect();
+        for &index in &selected_indices {
+            self.mark_directory_deleting(index);
+        }
 
         // Send start message
         if let Some(sender) = &self.deletion_sender {
@@ -1012,7 +1801,9 @@ impl App {
             });
 
             // Mark as deleting
-            self.directories[self.selected].deletion_status = crate::fs::DeletionStatus::Deleting;
+            if let Some(index) = self.selected_directory_index() {
+                self.directories[index].deletion_status = crate::fs::DeletionStatus::Deleting;
+            }
 
             match std::fs::remove_dir_all(&path) {
                 Ok(_) => {
@@ -1023,8 +1814,24 @@ impl App {
                     }
 
                     // Mark as deleted (but keep in list)
-                    self.directories[self.selected].deletion_status =
-                        crate::fs::DeletionStatus::Deleted;
+                    if let Some(index) = self.selected_directory_index() {
+                        self.directories[index].deletion_status =
+                            crate::fs::DeletionStatus::Deleted;
+                    }
+
+                    let freed_size = self
+                        .get_selected_directory()
+                        .map(|d| d.size)
+                        .unwrap_or(0);
+                    self.total_freed_space += freed_size;
+                    self.cached_total_size = self.cached_total_size.saturating_sub(freed_size);
+                    self.cached_calculated_count = self.cached_calculated_count.saturating_sub(1);
+                    self.cached_total_formatted = crate::fs::format_size(self.cached_total_size);
+                    self.set_status_toast(format!(
+                        "Deleted · freed {} · ~{} releasable",
+                        crate::fs::format_size(freed_size),
+                        self.cached_total_formatted
+                    ));
 
                     // Clear progress
                     self.deletion_progress = None;
@@ -1040,8 +1847,10 @@ impl App {
                     }
 
                     // Mark as error
-                    self.directories[self.selected].deletion_status =
-                        crate::fs::DeletionStatus::Error(e.to_string());
+                    if let Some(index) = self.selected_directory_index() {
+                        self.directories[index].deletion_status =
+                            crate::fs::DeletionStatus::Error(e.to_string());
+                    }
 
                     // Clear progress
                     self.deletion_progress = None;
@@ -1056,6 +1865,127 @@ impl App {
             ))
         }
     }
+}
+
+fn natural_path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let mut a_chars = a.chars().peekable();
+    let mut b_chars = b.chars().peekable();
+
+    loop {
+        match (a_chars.peek(), b_chars.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a_peek), Some(b_peek)) => {
+                if a_peek.is_ascii_digit() && b_peek.is_ascii_digit() {
+                    let a_num: String = a_chars.by_ref().take_while(|c| c.is_ascii_digit()).collect();
+                    let b_num: String = b_chars.by_ref().take_while(|c| c.is_ascii_digit()).collect();
+                    let ordering = a_num
+                        .parse::<u128>()
+                        .unwrap_or(0)
+                        .cmp(&b_num.parse::<u128>().unwrap_or(0));
+                    if ordering != Ordering::Equal {
+                        return ordering;
+                    }
+                } else {
+                    let a_ch = a_chars.next().unwrap();
+                    let b_ch = b_chars.next().unwrap();
+                    let ordering = a_ch
+                        .to_ascii_lowercase()
+                        .cmp(&b_ch.to_ascii_lowercase());
+                    if ordering != Ordering::Equal {
+                        return ordering;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn copy_to_clipboard(text: &str) -> Result<(), std::io::Error> {
+    use std::io::Write;
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        child.wait()?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if std::process::Command::new("wl-copy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(stdin) = child.stdin.as_mut() {
+                    stdin.write_all(text.as_bytes())?;
+                }
+                child.wait()?;
+                Ok(())
+            })
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let mut child = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        child.wait()?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut child = std::process::Command::new("clip")
+            .stdin(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        child.wait()?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Clipboard copy is not supported on this platform",
+    ))
+}
+
+fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), std::io::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn()?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()?;
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer").arg(path).spawn()?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Opening paths is not supported on this platform",
+    ))
 }
 
 #[cfg(test)]
@@ -1228,7 +2158,7 @@ mod tests {
     #[test]
     fn test_pagination() {
         let directories = (0..25)
-            .map(|i| create_test_directory(&format!("dir{i}"), i as u64 * 100))
+            .map(|i| create_test_directory(&format!("dir{i:02}"), i as u64 * 100))
             .collect();
         let mut app = App::new(directories, "test".to_string(), ".".to_string());
         let items_per_page = 20;
@@ -1239,7 +2169,7 @@ mod tests {
         // Test visible items on first page
         let visible = app.visible_items(items_per_page);
         assert_eq!(visible.len(), 20);
-        assert_eq!(visible[0].path, "dir0");
+        assert_eq!(visible[0].path, "dir00");
         assert_eq!(visible[19].path, "dir19");
 
         // Test next page
@@ -1266,6 +2196,60 @@ mod tests {
         assert_eq!(visible.len(), 5); // Last page has 5 items
         assert_eq!(visible[0].path, "dir20");
         assert_eq!(visible[4].path, "dir24");
+    }
+
+    #[test]
+    fn test_filter_esc_clears_applied_results() {
+        let directories = vec![
+            create_test_directory("alpha/node_modules", 100),
+            create_test_directory("beta/node_modules", 200),
+        ];
+        let mut app = App::new(directories, "node_modules".to_string(), ".".to_string());
+
+        app.begin_filter_input();
+        app.push_filter_char('a');
+        app.push_filter_char('l');
+        app.push_filter_char('p');
+        app.push_filter_char('h');
+        app.push_filter_char('a');
+        app.commit_filter();
+        assert_eq!(app.view_len(), 1);
+        assert_eq!(app.directories[app.display_indices[0]].path, "alpha/node_modules");
+
+        app.begin_filter_input();
+        while !app.filter_query.is_empty() {
+            app.pop_filter_char();
+        }
+        app.cancel_filter();
+        assert!(!app.has_active_filter());
+        assert_eq!(app.view_len(), 2);
+
+        app.begin_filter_input();
+        app.push_filter_char('b');
+        app.push_filter_char('e');
+        app.push_filter_char('t');
+        app.push_filter_char('a');
+        app.commit_filter();
+        assert_eq!(app.view_len(), 1);
+
+        app.clear_filter();
+        assert_eq!(app.view_len(), 2);
+    }
+
+    #[test]
+    fn test_natural_path_sort_order() {
+        let directories = vec![
+            create_test_directory("dir2", 100),
+            create_test_directory("dir10", 200),
+            create_test_directory("dir1", 50),
+        ];
+        let mut app = App::new(directories, "test".to_string(), ".".to_string());
+        app.sort_column = SortColumn::Path;
+        app.sort_direction = SortDirection::Asc;
+        app.rebuild_display_indices();
+        assert_eq!(app.directories[app.display_indices[0]].path, "dir1");
+        assert_eq!(app.directories[app.display_indices[1]].path, "dir2");
+        assert_eq!(app.directories[app.display_indices[2]].path, "dir10");
     }
 
     #[test]
@@ -1372,7 +2356,7 @@ mod tests {
             ".".to_string(),
         );
         assert_eq!(app.get_selected_count(), 0);
-        app.directories[0].selected = true;
+        app.toggle_current_selection(); // selects dir1
         assert_eq!(app.get_selected_count(), 1);
         let selected_dirs = app.get_selected_directories();
         assert_eq!(selected_dirs.len(), 1);
@@ -1390,8 +2374,9 @@ mod tests {
             ".".to_string(),
         );
         assert_eq!(app.get_selected_total_size(), 0);
-        app.directories[0].selected = true;
-        app.directories[1].selected = true;
+        app.toggle_current_selection(); // selects dir1
+        app.selected = 1;
+        app.select_current(); // selects dir2
         assert_eq!(app.get_selected_total_size(), 300);
     }
 
@@ -1571,6 +2556,29 @@ mod tests {
 
     // New tests for progressive loading functionality
     #[test]
+    fn test_display_indices_tracks_all_discovered_directories() {
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+
+        for i in 1..=15 {
+            app.add_discovered_directory(format!("dir{i}"));
+            if app.display_indices_dirty {
+                app.rebuild_display_indices();
+                app.display_indices_dirty = false;
+            }
+        }
+        assert_eq!(app.directories.len(), 15);
+        assert_eq!(app.view_len(), 15);
+
+        for i in 16..=59 {
+            app.add_discovered_directory(format!("dir{i}"));
+        }
+        app.rebuild_display_indices();
+        assert_eq!(app.directories.len(), 59);
+        assert_eq!(app.view_len(), 59);
+        assert_eq!(app.total_pages(10), 6);
+    }
+
+    #[test]
     fn test_add_discovered_directory() {
         let mut app = App::new(vec![], "test".to_string(), ".".to_string());
 
@@ -1579,15 +2587,16 @@ mod tests {
         app.add_discovered_directory("dir2".to_string());
         app.add_discovered_directory("dir3".to_string());
 
-        // Should not process batch yet (only 3 items, batch size is 5)
-        assert_eq!(app.directories.len(), 0);
-        assert_eq!(app.pending_directories.len(), 3);
+        // Default batch size is 1 — each directory appears immediately
+        assert_eq!(app.directories.len(), 3);
+        assert_eq!(app.pending_directories.len(), 0);
         assert_eq!(app.total_discovered, 3);
     }
 
     #[test]
     fn test_process_pending_batch() {
         let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        app.batch_size = 5;
 
         // Add 6 directories (more than batch size)
         for i in 1..=6 {
@@ -1668,7 +2677,7 @@ mod tests {
         // Complete
         app.set_discovery_status(DiscoveryStatus::Complete);
         let progress = app.get_discovery_progress();
-        assert!(progress.contains("Scan complete: 2 directories found"));
+        assert!(progress.contains("Search complete: 2 directories"));
 
         // Error
         app.set_discovery_status(DiscoveryStatus::Error("test error".to_string()));
@@ -1756,7 +2765,7 @@ mod tests {
         app.set_discovery_status(DiscoveryStatus::Complete);
         assert!(
             app.get_discovery_progress()
-                .contains("Scan complete: 3 directories found")
+                .contains("Search complete: 3 directories")
         );
     }
 
@@ -1901,5 +2910,109 @@ mod tests {
         assert_eq!(task.path, "/test/path");
         assert_eq!(task.priority, DeletionPriority::Medium);
         assert_eq!(task.size, 50_000_000);
+    }
+
+    #[test]
+    fn test_dequeue_size_calculations_respects_concurrency_limit() {
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+
+        for i in 0..8 {
+            app.directories.push(DirectoryInfo {
+                path: format!("dir{i}"),
+                size: 0,
+                formatted_size: "Calculating...".to_string(),
+                last_modified: None,
+                formatted_last_modified: "Unknown".to_string(),
+                selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
+            });
+            app.path_index.insert(format!("dir{i}"), i);
+            app.lowercased_paths.push(format!("dir{i}"));
+            app.unsized_indices.push(i);
+        }
+
+        let first_batch = app.dequeue_size_calculations(4, 20);
+        assert_eq!(first_batch.len(), 4);
+        assert_eq!(app.cached_in_flight_count, 4);
+
+        let second_batch = app.dequeue_size_calculations(4, 20);
+        assert!(second_batch.is_empty());
+
+        // Simulate completion via apply_size_update (which removes from unsized_indices)
+        for path in &first_batch {
+            app.apply_size_update(path, 1024, "1.0 KB".to_string(), None, "Unknown".to_string());
+        }
+
+        let third_batch = app.dequeue_size_calculations(4, 20);
+        assert_eq!(third_batch.len(), 4);
+    }
+
+    #[test]
+    fn test_dequeue_size_calculations_prefers_visible_page() {
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        app.items_per_page = 2;
+        app.current_page = 0;
+
+        for i in 0..6 {
+            app.directories.push(DirectoryInfo {
+                path: format!("dir{i}"),
+                size: 0,
+                formatted_size: "Calculating...".to_string(),
+                last_modified: None,
+                formatted_last_modified: "…".to_string(),
+                selected: false,
+                deletion_status: crate::fs::DeletionStatus::Normal,
+                calculation_status: crate::fs::CalculationStatus::NotStarted,
+                calculation_time: None,
+            });
+            app.path_index.insert(format!("dir{i}"), i);
+            app.lowercased_paths.push(format!("dir{i}"));
+            app.unsized_indices.push(i);
+        }
+        app.display_indices_dirty = true;
+
+        let batch = app.dequeue_size_calculations(2, 2);
+        assert_eq!(batch.len(), 2);
+        // Visible page (indices 0,1 in discovery/sort-by-path order) should be preferred
+        assert!(batch.contains(&"dir0".to_string()) || batch.contains(&"dir1".to_string()));
+        assert_eq!(app.cached_in_flight_count, 2);
+    }
+
+    #[test]
+    fn test_apply_size_update_updates_cached_totals() {
+        let mut app = App::new(vec![], "test".to_string(), ".".to_string());
+        app.directories.push(DirectoryInfo {
+            path: "dir1".to_string(),
+            size: 0,
+            formatted_size: "Calculating...".to_string(),
+            last_modified: None,
+            formatted_last_modified: "Unknown".to_string(),
+            selected: false,
+            deletion_status: crate::fs::DeletionStatus::Normal,
+            calculation_status: crate::fs::CalculationStatus::Calculating,
+            calculation_time: None,
+        });
+        app.path_index.insert("dir1".to_string(), 0);
+
+        assert!(app.apply_size_update(
+            "dir1",
+            1024,
+            "1.0 KB".to_string(),
+            None,
+            "Unknown".to_string()
+        ));
+        assert_eq!(app.cached_total_size, 1024);
+        assert_eq!(app.cached_calculated_count, 1);
+        assert_eq!(app.cached_total_formatted, "1.0 KB");
+        assert!(!app.apply_size_update(
+            "dir1",
+            2048,
+            "2.0 KB".to_string(),
+            None,
+            "Unknown".to_string()
+        ));
+        assert_eq!(app.cached_total_size, 1024);
     }
 }

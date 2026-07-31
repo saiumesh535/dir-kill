@@ -802,18 +802,17 @@ mod benchmarks {
         let jwalk_duration = start.elapsed();
         println!("Jwalk method: {} bytes in {:?}", jwalk_size, jwalk_duration);
 
-        // Verify optimized methods return consistent results (they may differ from original due to disk size vs logical size)
+        // Verify jwalk uses apparent/logical size (same as original); disk-size helpers may differ
         assert_eq!(
             optimized_size, parallel_size,
             "Optimized and parallel sizes should match"
         );
         assert_eq!(
-            optimized_size, jwalk_size,
-            "Optimized and jwalk sizes should match"
+            original_size, jwalk_size,
+            "Jwalk apparent size should match logical size"
         );
 
-        // Note: Original method uses logical file size, optimized methods use disk size
-        // This is why they may differ - optimized methods are more accurate
+        // Note: Original/jwalk use logical file size; optimized/parallel use disk allocation
 
         // Performance comparison
         println!("\n=== Performance Comparison ===");
