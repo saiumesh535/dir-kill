@@ -22,6 +22,12 @@ pub enum Commands {
         /// Comma-separated regex patterns for directories to ignore (e.g., "node_modules,\.git")
         #[arg(long, short)]
         ignore: Option<String>,
+        /// Print plain text results instead of launching the TUI
+        #[arg(long, conflicts_with = "json")]
+        no_tui: bool,
+        /// Output results as JSON (implies --no-tui)
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -33,9 +39,16 @@ pub fn run() -> Result<()> {
             pattern,
             path,
             ignore,
+            no_tui,
+            json,
         } => {
-            // Use TUI with real-time scanning as default behavior
-            ui::display_directories_with_scanning(pattern, path, ignore.as_deref().unwrap_or(""))?;
+            ui::display_directories_with_scanning(
+                pattern,
+                path,
+                ignore.as_deref().unwrap_or(""),
+                *no_tui || *json,
+                *json,
+            )?;
         }
     }
     Ok(())

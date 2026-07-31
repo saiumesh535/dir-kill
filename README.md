@@ -8,13 +8,51 @@ dir-kill scans your file system to find directories that match specified pattern
 
 <img src="./assets/dir-kill.png" alt="dir-kill screenshot" width="800" height="600" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
 
+## TUI keyboard shortcuts
+
+When the terminal UI is active, use these keys:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` or `j` / `k` | Move selection |
+| `Home` / `End` | First / last item |
+| `←` / `→` | Previous / next page |
+| `Space` | Toggle selection on current row |
+| `a` | Select all visible matches |
+| `d` | Deselect all |
+| `s` / `p` / `m` | Sort by size / path / age (toggle asc/desc) |
+| `/` | Filter paths (Enter to apply, Esc to cancel) |
+| `i` or `Tab` | Toggle details panel |
+| `o` | Open selected path in file manager |
+| `Ctrl+Y` | Copy selected path to clipboard |
+| `Del`, `f`, or `Ctrl+D` | Delete current directory (confirmation) |
+| `c` or `Ctrl+Shift+D` | Delete selected directories (confirmation) |
+| `Esc` | Close details panel, clear filter, or quit |
+| `q` | Quit |
+
+The status bar shows discovery progress, sizing progress (`[████░░░░] sizing N/M`), active filters, sort order, and brief toasts after deletes.
+
+### Preferences
+
+dir-kill saves UI preferences to `~/.config/dir-kill/config.toml`:
+
+- Default sort column and direction
+- Details panel visibility
+- Whether to auto-sort by size (desc) once all sizes are calculated
+
 ## CLI Usage
 
 ### Basic Commands
 
 ```bash
-# Find all node_modules directories
+# Find all node_modules directories (interactive TUI)
 dir-kill ls <pattern> <path-directory (default: .)>
+
+# Plain text output (no TUI)
+dir-kill ls node_modules --no-tui
+
+# JSON output for scripts
+dir-kill ls node_modules --json
 ```
 
 ### Command Options
@@ -25,6 +63,8 @@ dir-kill ls <pattern> [OPTIONS]
 OPTIONS:
     -h, --help             Show help information
     -i, --ignore <PATTERNS>    Comma-separated regex patterns for directories to ignore
+    --no-tui               Print plain text results instead of launching the TUI
+    --json                 Output results as JSON (implies --no-tui)
 ```
 
 ### Examples
@@ -50,6 +90,7 @@ dir-kill automatically avoids nested pattern matches to prevent infinite recursi
 - When searching for `node_modules`, it won't scan inside existing `node_modules` directories
 - When searching for `dist`, it won't scan inside existing `dist` directories  
 - When searching for `target`, it won't scan inside existing `target` directories
+- `.git` directories are skipped during scans (unless you are explicitly searching for `.git`)
 
 This behavior:
 - **Prevents infinite recursion** in deeply nested directory structures

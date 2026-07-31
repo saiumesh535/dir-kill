@@ -1,9 +1,14 @@
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
 use filesize::PathExt;
 use rayon::prelude::*;
 use regex::Regex;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::sync::mpsc::Sender;
 
 /// Ignore patterns for directory filtering
 #[derive(Debug, Clone)]
@@ -55,6 +60,14 @@ impl IgnorePatterns {
         self.patterns
             .iter()
             .any(|pattern| pattern.is_match(dir_name))
+    }
+
+    /// Check if a directory name should be ignored (OsStr variant avoids allocation on hot path)
+    pub fn should_ignore_name(&self, dir_name: &OsStr) -> bool {
+        if self.patterns.is_empty() {
+            return false;
+        }
+        self.should_ignore(&dir_name.to_string_lossy())
     }
 
     /// Check if ignore patterns are empty
@@ -167,8 +180,7 @@ pub fn find_directories_with_ignore(
 
     let mut matches = Vec::new();
 
-    // Recursively search for directories
-    search_directories_recursive(path, pattern, ignore_patterns, &mut matches)?;
+    walk_matching_directories_collect(path, pattern, ignore_patterns, &mut matches)?;
 
     Ok(matches)
 }
@@ -223,8 +235,8 @@ pub fn stream_directories_with_ignore(
         bail!("Path '{}' is not a directory", root_path);
     }
 
-    // Start streaming discovery
-    stream_directories_recursive(path, pattern, ignore_patterns, &sender)?;
+    // Start streaming discovery (parallel walk, like npkill's worker pool)
+    walk_matching_directories_streaming(path, pattern, ignore_patterns, &sender)?;
 
     // Send completion message
     let _ = sender.send(DiscoveryMessage::DiscoveryComplete);
@@ -232,67 +244,171 @@ pub fn stream_directories_with_ignore(
     Ok(())
 }
 
-/// Recursively streams directory discovery with immediate results
-fn stream_directories_recursive(
-    current_path: &Path,
-    pattern: &str,
-    ignore_patterns: &IgnorePatterns,
-    sender: &std::sync::mpsc::Sender<DiscoveryMessage>,
-) -> Result<()> {
-    stream_directories_recursive_with_depth(current_path, pattern, ignore_patterns, sender, 0)
+/// Parallel discovery / concurrent size-calc thread budget.
+///
+/// Sizing many trees is IO-bound on SSD; a slightly higher concurrency than dua's
+/// interactive default (3 on macOS) finishes large `~/Developer` scans sooner.
+pub fn scan_thread_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4)
+        .clamp(4, 8)
 }
 
-/// Recursively streams directory discovery with depth tracking to avoid nested pattern matches
-fn stream_directories_recursive_with_depth(
-    current_path: &Path,
+fn discovery_parallelism() -> usize {
+    scan_thread_count()
+}
+
+/// Long-lived pool for discovery walks (avoids RayonNewPool create/teardown per scan).
+fn discovery_pool() -> std::sync::Arc<rayon::ThreadPool> {
+    use std::sync::{Arc, OnceLock};
+    static POOL: OnceLock<Arc<rayon::ThreadPool>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(discovery_parallelism())
+                .thread_name(|i| format!("dir-kill-discover-{i}"))
+                .build()
+                .expect("discovery pool"),
+        )
+    })
+    .clone()
+}
+
+/// Heavy directories we never need to descend into while searching for `pattern`
+/// (unless `pattern` itself is that name). Skipping these is the biggest discovery win
+/// under trees like `~/Developer` (Rust `target`, Next `.next`, etc.).
+fn should_prune_unrelated(name: &OsStr, pattern: &str) -> bool {
+    if name == OsStr::new(pattern) {
+        return false;
+    }
+    // .git is handled separately so we can still search for it
+    matches!(
+        name.to_str(),
+        Some("target")
+            | Some("dist")
+            | Some("build")
+            | Some("out")
+            | Some("coverage")
+            | Some("__pycache__")
+            | Some("site-packages")
+            | Some("bower_components")
+            | Some(".next")
+            | Some(".nuxt")
+            | Some(".output")
+            | Some(".cache")
+            | Some(".turbo")
+            | Some(".parcel-cache")
+            | Some(".gradle")
+            | Some(".yarn")
+            | Some(".pnpm-store")
+            | Some(".cargo")
+            | Some(".rustup")
+            | Some(".tox")
+            | Some(".mypy_cache")
+            | Some("Pods")
+            | Some("DerivedData")
+            | Some("vendor")
+            | Some(".venv")
+            | Some("venv")
+            | Some("node_modules") // when searching for something else
+    )
+}
+
+fn walk_matching_directories_collect(
+    root: &Path,
     pattern: &str,
     ignore_patterns: &IgnorePatterns,
-    sender: &std::sync::mpsc::Sender<DiscoveryMessage>,
-    _depth: usize,
+    matches: &mut Vec<String>,
 ) -> Result<()> {
-    for entry in std::fs::read_dir(current_path)? {
-        let entry = entry?;
-        let path = entry.path();
+    let (tx, rx) = mpsc::channel::<DiscoveryMessage>();
+    walk_matching_directories_parallel(root, pattern, ignore_patterns, &tx)?;
+    let _ = tx.send(DiscoveryMessage::DiscoveryComplete);
+    for msg in rx {
+        match msg {
+            DiscoveryMessage::DirectoryFound(path) => matches.push(path),
+            DiscoveryMessage::DiscoveryComplete => break,
+            DiscoveryMessage::DiscoveryError(_) => break,
+        }
+    }
+    Ok(())
+}
 
-        if path.is_dir() {
-            // Get file name once to avoid redundant calls
-            if let Some(file_name) = path.file_name() {
-                let dir_name = file_name.to_string_lossy();
+fn walk_matching_directories_streaming(
+    root: &Path,
+    pattern: &str,
+    ignore_patterns: &IgnorePatterns,
+    sender: &Sender<DiscoveryMessage>,
+) -> Result<()> {
+    walk_matching_directories_parallel(root, pattern, ignore_patterns, sender)
+}
 
-                // Skip if directory matches ignore patterns
-                if ignore_patterns.should_ignore(&dir_name) {
-                    continue;
+fn walk_matching_directories_parallel(
+    root: &Path,
+    pattern: &str,
+    ignore_patterns: &IgnorePatterns,
+    sender: &Sender<DiscoveryMessage>,
+) -> Result<()> {
+    let root_buf = root.to_path_buf();
+    let ignore = ignore_patterns.clone();
+    let pattern_for_prune = pattern.to_string();
+    let stop = Arc::new(AtomicBool::new(false));
+    let sender = sender.clone();
+    // Searching for a non-dot name (e.g. node_modules): skip hidden dirs entirely.
+    let skip_hidden = !pattern.starts_with('.');
+
+    let walker = jwalk::WalkDir::new(root)
+        .follow_links(false)
+        .skip_hidden(skip_hidden)
+        .parallelism(jwalk::Parallelism::RayonExistingPool {
+            pool: discovery_pool(),
+            busy_timeout: None,
+        })
+        .process_read_dir(move |_depth, _path, _read_dir, children| {
+            children.retain(|entry| {
+                let Ok(entry) = entry else {
+                    return true;
+                };
+
+                if !entry.file_type().is_dir() {
+                    return false;
                 }
 
-                // Check if this directory matches the pattern
-                if dir_name == pattern {
-                    let dir_path = path.to_string_lossy().to_string();
-                    // Send immediately as found
-                    if sender
-                        .send(DiscoveryMessage::DirectoryFound(dir_path))
-                        .is_err()
-                    {
-                        // Channel closed, stop discovery
-                        return Ok(());
+                let name = entry.file_name();
+                if ignore.should_ignore_name(name) {
+                    return false;
+                }
+
+                // Skip VCS metadata dirs unless that is the search target
+                if name == OsStr::new(".git") && pattern_for_prune != ".git" {
+                    return false;
+                }
+
+                if should_prune_unrelated(name, &pattern_for_prune) {
+                    return false;
+                }
+
+                if name == OsStr::new(&pattern_for_prune) {
+                    if entry.path() != root_buf && !stop.load(Ordering::Relaxed) {
+                        if sender
+                            .send(DiscoveryMessage::DirectoryFound(
+                                entry.path().to_string_lossy().into_owned(),
+                            ))
+                            .is_err()
+                        {
+                            stop.store(true, Ordering::Relaxed);
+                        }
                     }
+                    return false;
                 }
 
-                // Skip nested pattern matches to avoid infinite recursion and redundant results
-                // If we're already inside a directory that matches our pattern, don't recurse into it
-                if dir_name == pattern {
-                    // Skip recursing into this directory to avoid nested results
-                    continue;
-                }
-            }
+                true
+            })
+        });
 
-            // Recursively search subdirectories
-            stream_directories_recursive_with_depth(
-                &path,
-                pattern,
-                ignore_patterns,
-                sender,
-                _depth + 1,
-            )?;
+    for entry in walker {
+        if entry.is_err() {
+            continue;
         }
     }
 
@@ -364,70 +480,13 @@ pub fn find_directories_with_size_and_ignore(
     Ok(directory_infos)
 }
 
-fn search_directories_recursive(
-    current_path: &Path,
-    pattern: &str,
-    ignore_patterns: &IgnorePatterns,
-    matches: &mut Vec<String>,
-) -> Result<()> {
-    search_directories_recursive_with_depth(current_path, pattern, ignore_patterns, matches, 0)
-}
-
-/// Recursively searches directories with depth tracking to avoid nested pattern matches
-fn search_directories_recursive_with_depth(
-    current_path: &Path,
-    pattern: &str,
-    ignore_patterns: &IgnorePatterns,
-    matches: &mut Vec<String>,
-    _depth: usize,
-) -> Result<()> {
-    for entry in std::fs::read_dir(current_path)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            // Get file name once to avoid redundant calls
-            if let Some(file_name) = path.file_name() {
-                let dir_name = file_name.to_string_lossy();
-
-                // Skip if directory matches ignore patterns
-                if ignore_patterns.should_ignore(&dir_name) {
-                    continue;
-                }
-
-                // Check if this directory matches the pattern
-                if dir_name == pattern {
-                    matches.push(path.to_string_lossy().to_string());
-                }
-
-                // Skip nested pattern matches to avoid infinite recursion and redundant results
-                // If we're already inside a directory that matches our pattern, don't recurse into it
-                if dir_name == pattern {
-                    // Skip recursing into this directory to avoid nested results
-                    continue;
-                }
-            }
-
-            // Recursively search subdirectories
-            search_directories_recursive_with_depth(
-                &path,
-                pattern,
-                ignore_patterns,
-                matches,
-                _depth + 1,
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
 /// Lists all directories matching the given pattern in the current directory
 pub fn find_directories_current(pattern: &str) -> Result<Vec<String>> {
     find_directories(".", pattern)
 }
 
-/// Calculate the total size of a directory in bytes (optimized version)
+/// Calculate the total size of a directory in bytes (recursive read_dir baseline).
+#[cfg(test)]
 pub fn calculate_directory_size(path: &Path) -> Result<u64> {
     let mut total_size = 0u64;
 
@@ -447,7 +506,8 @@ pub fn calculate_directory_size(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
-/// Calculate the total size of a directory in bytes using optimized disk size calculation
+/// Calculate the total size of a directory using disk-allocated size (recursive).
+#[cfg(test)]
 pub fn calculate_directory_size_optimized(path: &Path) -> Result<u64> {
     let mut total_size = 0u64;
 
@@ -457,7 +517,6 @@ pub fn calculate_directory_size_optimized(path: &Path) -> Result<u64> {
             let entry_path = entry.path();
 
             if entry_path.is_file() {
-                // Use optimized disk size calculation
                 if let Ok(metadata) = entry.metadata() {
                     total_size += entry_path
                         .size_on_disk_fast(&metadata)
@@ -472,7 +531,8 @@ pub fn calculate_directory_size_optimized(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
-/// Calculate the total size of a directory in bytes using parallel processing
+/// Calculate directory size with nested rayon (test/benchmark only — pathological on wide trees).
+#[cfg(test)]
 pub fn calculate_directory_size_parallel(path: &Path) -> Result<u64> {
     if !path.is_dir() {
         return Ok(0);
@@ -486,7 +546,6 @@ pub fn calculate_directory_size_parallel(path: &Path) -> Result<u64> {
             let entry_path = &entry.path();
 
             if entry_path.is_file() {
-                // Use optimized disk size calculation
                 if let Ok(metadata) = entry.metadata() {
                     entry_path
                         .size_on_disk_fast(&metadata)
@@ -505,41 +564,58 @@ pub fn calculate_directory_size_parallel(path: &Path) -> Result<u64> {
     Ok(total_size)
 }
 
-/// Calculate directory size using jwalk for maximum performance (like dua-cli)
+/// Calculate directory size (apparent / logical size).
+///
+/// On macOS this uses `getattrlistbulk` for batched metadata. Elsewhere it uses
+/// jwalk with sizes accumulated in `process_read_dir` (files are not yielded).
 pub fn calculate_directory_size_jwalk(path: &Path) -> Result<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        size_macos::calculate_directory_size(path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        calculate_directory_size_jwalk_fallback(path)
+    }
+}
+
+/// Cross-platform jwalk size path: sum file lengths inside `process_read_dir`
+/// and only descend into directories (no per-file iterator traffic).
+pub(crate) fn calculate_directory_size_jwalk_fallback(path: &Path) -> Result<u64> {
     if !path.is_dir() {
         return Ok(0);
     }
 
-    let mut total_size = 0u64;
+    let total_size = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    // Use jwalk for parallel directory traversal
-    for entry in jwalk::WalkDir::new(path)
+    let walker = jwalk::WalkDir::new(path)
+        .follow_links(false)
         .skip_hidden(false)
-        .process_read_dir(|_depth, _path, _read_dir_state, _children| {
-            // This callback allows for custom processing of directory entries
-        })
-    {
-        match entry {
-            Ok(entry) => {
-                if entry.file_type().is_file() {
-                    if let Ok(metadata) = entry.metadata() {
-                        // Use optimized disk size calculation
-                        total_size += entry
-                            .path()
-                            .size_on_disk_fast(&metadata)
-                            .unwrap_or(metadata.len());
+        .parallelism(jwalk::Parallelism::Serial)
+        .process_read_dir({
+            let total_size = Arc::clone(&total_size);
+            move |_depth, _path, _state, children| {
+                children.retain(|entry| {
+                    let Ok(entry) = entry else {
+                        return true;
+                    };
+                    if entry.file_type().is_file() {
+                        if let Ok(meta) = entry.metadata() {
+                            total_size.fetch_add(meta.len(), Ordering::Relaxed);
+                        }
+                        return false;
                     }
-                }
+                    entry.file_type().is_dir()
+                });
             }
-            Err(_) => {
-                // Skip entries that can't be read
-                continue;
-            }
-        }
+        });
+
+    // Drive recursion only — file sizes were already accumulated above.
+    for entry in walker {
+        let _ = entry;
     }
 
-    Ok(total_size)
+    Ok(total_size.load(Ordering::Relaxed))
 }
 
 /// Calculate directory size with timing information
@@ -572,6 +648,20 @@ pub fn format_duration(duration: &std::time::Duration) -> String {
         }
     } else {
         format!("{} nanoseconds", duration.as_nanos())
+    }
+}
+
+/// Format duration using fractional seconds (for total wall-clock timing)
+pub fn format_duration_in_seconds(duration: &std::time::Duration) -> String {
+    let secs = duration.as_secs_f64();
+    if secs >= 10.0 {
+        format!("{:.0} seconds", secs)
+    } else if secs >= 1.0 {
+        format!("{:.1} seconds", secs)
+    } else if secs > 0.0 {
+        format!("{:.2} seconds", secs)
+    } else {
+        "0 seconds".to_string()
     }
 }
 
@@ -652,6 +742,9 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.1} {}", size, UNITS[unit_index])
     }
 }
+
+#[cfg(target_os = "macos")]
+mod size_macos;
 
 #[cfg(test)]
 mod tests;

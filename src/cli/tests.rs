@@ -30,6 +30,8 @@ fn test_ls_default_arguments() {
             pattern,
             path,
             ignore,
+            no_tui: _,
+            json: _,
         } => {
             assert_eq!(pattern, "test_pattern");
             assert_eq!(path, ".");
@@ -49,6 +51,8 @@ fn test_ls_with_path() {
             pattern,
             path,
             ignore,
+            no_tui: _,
+            json: _,
         } => {
             assert_eq!(pattern, "test_pattern");
             assert_eq!(path, "/tmp");
@@ -100,6 +104,8 @@ fn test_ls_with_pattern() {
             path,
             pattern,
             ignore,
+            no_tui: _,
+            json: _,
         } => {
             assert_eq!(path, ".");
             assert_eq!(pattern, "node_modules");
@@ -119,6 +125,8 @@ fn test_ls_with_short_pattern() {
             path,
             pattern,
             ignore,
+            no_tui: _,
+            json: _,
         } => {
             assert_eq!(path, ".");
             assert_eq!(pattern, "src");
@@ -144,6 +152,8 @@ fn test_ls_with_ignore_flag() {
             path,
             pattern,
             ignore,
+            no_tui: _,
+            json: _,
         } => {
             assert_eq!(path, ".");
             assert_eq!(pattern, "test_pattern");
@@ -163,6 +173,8 @@ fn test_ls_with_ignore_short_flag() {
             path,
             pattern,
             ignore,
+            no_tui: _,
+            json: _,
         } => {
             assert_eq!(path, ".");
             assert_eq!(pattern, "test_pattern");
