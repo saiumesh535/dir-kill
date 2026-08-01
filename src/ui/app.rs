@@ -520,11 +520,11 @@ impl App {
     }
 
     pub fn clear_expired_toast(&mut self) -> bool {
-        if let Some(toast) = &self.status_toast {
-            if std::time::Instant::now() >= toast.until {
-                self.status_toast = None;
-                return true;
-            }
+        if let Some(toast) = &self.status_toast
+            && std::time::Instant::now() >= toast.until
+        {
+            self.status_toast = None;
+            return true;
         }
         false
     }
@@ -699,8 +699,8 @@ impl App {
                 .min(self.display_indices.len().saturating_sub(1));
         }
 
-        if self.items_per_page > 0 {
-            self.current_page = self.selected / self.items_per_page;
+        if let Some(page) = self.selected.checked_div(self.items_per_page) {
+            self.current_page = page;
         }
     }
 
@@ -1359,22 +1359,22 @@ impl App {
     }
 
     pub fn select_current(&mut self) {
-        if let Some(idx) = self.selected_directory_index() {
-            if !self.directories[idx].selected {
-                self.directories[idx].selected = true;
-                self.cached_selected_count += 1;
-                self.cached_selected_size += self.directories[idx].size;
-            }
+        if let Some(idx) = self.selected_directory_index()
+            && !self.directories[idx].selected
+        {
+            self.directories[idx].selected = true;
+            self.cached_selected_count += 1;
+            self.cached_selected_size += self.directories[idx].size;
         }
     }
 
     pub fn deselect_current(&mut self) {
-        if let Some(idx) = self.selected_directory_index() {
-            if self.directories[idx].selected {
-                self.directories[idx].selected = false;
-                self.cached_selected_count -= 1;
-                self.cached_selected_size -= self.directories[idx].size;
-            }
+        if let Some(idx) = self.selected_directory_index()
+            && self.directories[idx].selected
+        {
+            self.directories[idx].selected = false;
+            self.cached_selected_count -= 1;
+            self.cached_selected_size -= self.directories[idx].size;
         }
     }
 
@@ -1631,10 +1631,10 @@ impl App {
                                 crate::fs::format_size(freed),
                                 releasable
                             ));
-                        } else if let Some(progress) = &self.deletion_progress {
-                            if let Some(err) = progress.errors.first() {
-                                toast_message = Some(format!("Delete failed: {err}"));
-                            }
+                        } else if let Some(progress) = &self.deletion_progress
+                            && let Some(err) = progress.errors.first()
+                        {
+                            toast_message = Some(format!("Delete failed: {err}"));
                         }
                         // Clear progress
                         self.deletion_progress = None;

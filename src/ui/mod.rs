@@ -588,11 +588,9 @@ fn display_directories_tui(
                             app.request_delete_current();
                             needs_redraw = true;
                         }
-                        crossterm::event::KeyCode::Char('c') => {
-                            if app.get_selected_count() > 0 {
-                                app.request_delete_selected();
-                                needs_redraw = true;
-                            }
+                        crossterm::event::KeyCode::Char('c') if app.get_selected_count() > 0 => {
+                            app.request_delete_selected();
+                            needs_redraw = true;
                         }
                         _ => {}
                     }

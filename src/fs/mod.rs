@@ -389,15 +389,15 @@ fn walk_matching_directories_parallel(
                 }
 
                 if name == OsStr::new(&pattern_for_prune) {
-                    if entry.path() != root_buf && !stop.load(Ordering::Relaxed) {
-                        if sender
+                    if entry.path() != root_buf
+                        && !stop.load(Ordering::Relaxed)
+                        && sender
                             .send(DiscoveryMessage::DirectoryFound(
                                 entry.path().to_string_lossy().into_owned(),
                             ))
                             .is_err()
-                        {
-                            stop.store(true, Ordering::Relaxed);
-                        }
+                    {
+                        stop.store(true, Ordering::Relaxed);
                     }
                     return false;
                 }
@@ -475,7 +475,7 @@ pub fn find_directories_with_size_and_ignore(
         .collect();
 
     // Sort by size (largest first)
-    directory_infos.sort_by(|a, b| b.size.cmp(&a.size));
+    directory_infos.sort_by_key(|b| std::cmp::Reverse(b.size));
 
     Ok(directory_infos)
 }
@@ -581,6 +581,7 @@ pub fn calculate_directory_size_jwalk(path: &Path) -> Result<u64> {
 
 /// Cross-platform jwalk size path: sum file lengths inside `process_read_dir`
 /// and only descend into directories (no per-file iterator traffic).
+#[cfg(any(test, not(target_os = "macos")))]
 pub(crate) fn calculate_directory_size_jwalk_fallback(path: &Path) -> Result<u64> {
     if !path.is_dir() {
         return Ok(0);

@@ -412,7 +412,7 @@ fn row_for_directory(
     };
 
     let (size_text, size_style) = size_cell(dir, quiet);
-    let path_fg = if focused { TEXT } else { TEXT };
+    let path_fg = TEXT;
     let path_dim = MUTED;
 
     let mut row = Row::new(vec![
