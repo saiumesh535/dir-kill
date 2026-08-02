@@ -240,7 +240,9 @@ impl DeletionThreadPool {
                         break Some(task);
                     }
                     // Wait until notified or 100ms timeout (for graceful shutdown)
-                    let result = cvar.wait_timeout(queue, std::time::Duration::from_millis(100)).unwrap();
+                    let result = cvar
+                        .wait_timeout(queue, std::time::Duration::from_millis(100))
+                        .unwrap();
                     queue = result.0;
                 }
             };
@@ -549,18 +551,27 @@ impl App {
 
     pub fn save_preferences(&self) {
         let (sort_column, sort_direction) = match self.sort_column {
-            SortColumn::Size => ("size", match self.sort_direction {
-                SortDirection::Asc => "asc",
-                SortDirection::Desc => "desc",
-            }),
-            SortColumn::Path => ("path", match self.sort_direction {
-                SortDirection::Asc => "asc",
-                SortDirection::Desc => "desc",
-            }),
-            SortColumn::Age => ("age", match self.sort_direction {
-                SortDirection::Asc => "asc",
-                SortDirection::Desc => "desc",
-            }),
+            SortColumn::Size => (
+                "size",
+                match self.sort_direction {
+                    SortDirection::Asc => "asc",
+                    SortDirection::Desc => "desc",
+                },
+            ),
+            SortColumn::Path => (
+                "path",
+                match self.sort_direction {
+                    SortDirection::Asc => "asc",
+                    SortDirection::Desc => "desc",
+                },
+            ),
+            SortColumn::Age => (
+                "age",
+                match self.sort_direction {
+                    SortDirection::Asc => "asc",
+                    SortDirection::Desc => "desc",
+                },
+            ),
         };
         let config = crate::config::Config {
             sort_column: sort_column.to_string(),
@@ -655,7 +666,9 @@ impl App {
         indices.sort_by(|&a, &b| {
             let ordering = match self.sort_column {
                 SortColumn::Size => self.directories[a].size.cmp(&self.directories[b].size),
-                SortColumn::Path => natural_path_cmp(&self.directories[a].path, &self.directories[b].path),
+                SortColumn::Path => {
+                    natural_path_cmp(&self.directories[a].path, &self.directories[b].path)
+                }
                 SortColumn::Age => match (
                     self.directories[a].last_modified,
                     self.directories[b].last_modified,
@@ -742,10 +755,7 @@ impl App {
         let sizing = if calculated < total {
             format!("sizing {calculated}/{total}")
         } else if total > 0 {
-            format!(
-                "~{} releasable",
-                self.cached_total_formatted
-            )
+            format!("~{} releasable", self.cached_total_formatted)
         } else {
             String::new()
         };
@@ -848,11 +858,7 @@ impl App {
     }
 
     pub fn request_delete_selected(&mut self) {
-        let selected: Vec<_> = self
-            .directories
-            .iter()
-            .filter(|dir| dir.selected)
-            .collect();
+        let selected: Vec<_> = self.directories.iter().filter(|dir| dir.selected).collect();
         if selected.is_empty() {
             return;
         }
@@ -998,9 +1004,9 @@ impl App {
             };
 
             let index = self.directories.len();
-            self.path_index
-                .insert(directory_info.path.clone(), index);
-            self.lowercased_paths.push(directory_info.path.to_lowercase());
+            self.path_index.insert(directory_info.path.clone(), index);
+            self.lowercased_paths
+                .push(directory_info.path.to_lowercase());
             self.unsized_indices.push(index);
             self.directories.push(directory_info);
         }
@@ -1153,17 +1159,17 @@ impl App {
 
                 if self.cached_calculated_count == total_count && total_count > 0 {
                     let discovery_timing = self.format_discovery_timing_label();
-                    let sizing_timing = self
-                        .total_completion_time
-                        .map(|duration| {
-                            format!(
-                                ", sizes: {}",
-                                crate::fs::format_duration(&duration.saturating_sub(
-                                    self.discovery_duration.unwrap_or(duration)
-                                ))
-                            )
-                        })
-                        .unwrap_or_default();
+                    let sizing_timing =
+                        self.total_completion_time
+                            .map(|duration| {
+                                format!(
+                                    ", sizes: {}",
+                                    crate::fs::format_duration(&duration.saturating_sub(
+                                        self.discovery_duration.unwrap_or(duration)
+                                    ))
+                                )
+                            })
+                            .unwrap_or_default();
                     format!(
                         "Search complete: {} directories, {} total ({}{})",
                         self.total_discovered, size_formatted, discovery_timing, sizing_timing
@@ -1568,9 +1574,7 @@ impl App {
                                 if result.success {
                                     if let Some(progress) = &mut self.deletion_progress {
                                         progress.completed_items += 1;
-                                        progress
-                                            .deleted_paths
-                                            .push(result.path.clone());
+                                        progress.deleted_paths.push(result.path.clone());
                                     }
                                     // Track freed space
                                     let freed_size = self.directories[result.index].size;
@@ -1604,10 +1608,7 @@ impl App {
                                         progress.errors.push(format!(
                                             "{}: {}",
                                             result.path,
-                                            result
-                                                .error
-                                                .as_deref()
-                                                .unwrap_or("Unknown error")
+                                            result.error.as_deref().unwrap_or("Unknown error")
                                         ));
                                     }
                                     self.directories[result.index].deletion_status =
@@ -1819,10 +1820,7 @@ impl App {
                             crate::fs::DeletionStatus::Deleted;
                     }
 
-                    let freed_size = self
-                        .get_selected_directory()
-                        .map(|d| d.size)
-                        .unwrap_or(0);
+                    let freed_size = self.get_selected_directory().map(|d| d.size).unwrap_or(0);
                     self.total_freed_space += freed_size;
                     self.cached_total_size = self.cached_total_size.saturating_sub(freed_size);
                     self.cached_calculated_count = self.cached_calculated_count.saturating_sub(1);
@@ -1880,8 +1878,14 @@ fn natural_path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             (Some(_), None) => return Ordering::Greater,
             (Some(a_peek), Some(b_peek)) => {
                 if a_peek.is_ascii_digit() && b_peek.is_ascii_digit() {
-                    let a_num: String = a_chars.by_ref().take_while(|c| c.is_ascii_digit()).collect();
-                    let b_num: String = b_chars.by_ref().take_while(|c| c.is_ascii_digit()).collect();
+                    let a_num: String = a_chars
+                        .by_ref()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect();
+                    let b_num: String = b_chars
+                        .by_ref()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect();
                     let ordering = a_num
                         .parse::<u128>()
                         .unwrap_or(0)
@@ -1892,9 +1896,7 @@ fn natural_path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
                 } else {
                     let a_ch = a_chars.next().unwrap();
                     let b_ch = b_chars.next().unwrap();
-                    let ordering = a_ch
-                        .to_ascii_lowercase()
-                        .cmp(&b_ch.to_ascii_lowercase());
+                    let ordering = a_ch.to_ascii_lowercase().cmp(&b_ch.to_ascii_lowercase());
                     if ordering != Ordering::Equal {
                         return ordering;
                     }
@@ -2214,7 +2216,10 @@ mod tests {
         app.push_filter_char('a');
         app.commit_filter();
         assert_eq!(app.view_len(), 1);
-        assert_eq!(app.directories[app.display_indices[0]].path, "alpha/node_modules");
+        assert_eq!(
+            app.directories[app.display_indices[0]].path,
+            "alpha/node_modules"
+        );
 
         app.begin_filter_input();
         while !app.filter_query.is_empty() {
@@ -2942,7 +2947,13 @@ mod tests {
 
         // Simulate completion via apply_size_update (which removes from unsized_indices)
         for path in &first_batch {
-            app.apply_size_update(path, 1024, "1.0 KB".to_string(), None, "Unknown".to_string());
+            app.apply_size_update(
+                path,
+                1024,
+                "1.0 KB".to_string(),
+                None,
+                "Unknown".to_string(),
+            );
         }
 
         let third_batch = app.dequeue_size_calculations(4, 20);

@@ -1,9 +1,5 @@
 use anyhow::Result;
-use ratatui::{
-    layout::Rect,
-    Terminal,
-    backend::CrosstermBackend,
-};
+use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 use std::io;
 
 /// Remove ./ prefix from path if present
@@ -23,11 +19,7 @@ mod test_helpers {
     }
 
     pub fn get_directory_icon(selected: bool, _is_highlighted: bool) -> &'static str {
-        if selected {
-            "📂"
-        } else {
-            "📁"
-        }
+        if selected { "📂" } else { "📁" }
     }
 
     pub fn get_selection_indicator_color(selected: bool) -> Color {
@@ -122,8 +114,7 @@ pub fn display_directories_with_scanning(
 /// Output scan results as JSON (blocking until sizes are calculated)
 pub fn display_directories_json(pattern: &str, path: &str, ignore_patterns: &str) -> Result<()> {
     let ignore_patterns = fs::IgnorePatterns::new(ignore_patterns)?;
-    let directories =
-        fs::find_directories_with_size_and_ignore(path, pattern, &ignore_patterns)?;
+    let directories = fs::find_directories_with_size_and_ignore(path, pattern, &ignore_patterns)?;
 
     #[derive(serde::Serialize)]
     struct JsonDir<'a> {
@@ -190,13 +181,8 @@ fn display_directories_tui(
     let (discovery_tx, discovery_rx) = std::sync::mpsc::channel::<fs::DiscoveryMessage>();
 
     // Channels for size updates: path, size, formatted size, parent mtime, formatted mtime
-    let (size_tx, size_rx) = std::sync::mpsc::channel::<(
-        String,
-        u64,
-        String,
-        Option<std::time::SystemTime>,
-        String,
-    )>();
+    let (size_tx, size_rx) =
+        std::sync::mpsc::channel::<(String, u64, String, Option<std::time::SystemTime>, String)>();
 
     // Start streaming discovery in background
     let pattern_clone = pattern.to_string();
@@ -346,10 +332,8 @@ fn display_directories_tui(
 
         // Backpressured size calculations: one spawn per path so workers run in parallel
         if !app.directories.is_empty() {
-            let paths_to_calculate = app.dequeue_size_calculations(
-                app::max_concurrent_size_calcs(),
-                cached_items_per_page,
-            );
+            let paths_to_calculate = app
+                .dequeue_size_calculations(app::max_concurrent_size_calcs(), cached_items_per_page);
 
             for dir_path in paths_to_calculate {
                 let size_tx_clone = size_tx.clone();
@@ -386,8 +370,7 @@ fn display_directories_tui(
         // Viewport-based pagination: recompute items per page when terminal size or layout changes
         let terminal_size = terminal.size()?;
         let viewport = Rect::new(0, 0, terminal_size.width, terminal_size.height);
-        let items_per_page =
-            view::items_per_page_for_viewport(viewport, app.show_details_panel);
+        let items_per_page = view::items_per_page_for_viewport(viewport, app.show_details_panel);
         if items_per_page != cached_items_per_page {
             cached_items_per_page = items_per_page;
             app.items_per_page = items_per_page;
@@ -415,186 +398,192 @@ fn display_directories_tui(
                     needs_redraw = true;
                 }
                 crossterm::event::Event::Key(key_event) => {
-                app.items_per_page = cached_items_per_page;
-                if app.show_help {
-                    app.show_help = false;
-                    needs_redraw = true;
-                } else if app.delete_confirmation.is_some() {
-                    match key_event.code {
-                        crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
-                            let action = app.confirm_delete();
-                            match action {
-                                DeleteConfirmAction::Current => {
-                                    let _ = app.start_delete_current_directory();
+                    app.items_per_page = cached_items_per_page;
+                    if app.show_help {
+                        app.show_help = false;
+                        needs_redraw = true;
+                    } else if app.delete_confirmation.is_some() {
+                        match key_event.code {
+                            crossterm::event::KeyCode::Char('y')
+                            | crossterm::event::KeyCode::Char('Y') => {
+                                let action = app.confirm_delete();
+                                match action {
+                                    DeleteConfirmAction::Current => {
+                                        let _ = app.start_delete_current_directory();
+                                    }
+                                    DeleteConfirmAction::Selected => {
+                                        let _ = app.start_delete_selected_directories();
+                                    }
                                 }
-                                DeleteConfirmAction::Selected => {
-                                    let _ = app.start_delete_selected_directories();
+                                needs_redraw = true;
+                                last_activity_time = std::time::Instant::now();
+                            }
+                            crossterm::event::KeyCode::Char('n')
+                            | crossterm::event::KeyCode::Char('N')
+                            | crossterm::event::KeyCode::Esc => {
+                                app.cancel_delete_confirmation();
+                                needs_redraw = true;
+                            }
+                            _ => {}
+                        }
+                    } else if app.filter_input_active {
+                        match key_event.code {
+                            crossterm::event::KeyCode::Enter => {
+                                app.commit_filter();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Esc => {
+                                app.cancel_filter();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Backspace => {
+                                app.pop_filter_char();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char(c) => {
+                                app.push_filter_char(c);
+                                needs_redraw = true;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        let items_per_page = cached_items_per_page;
+                        let ctrl = key_event
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL);
+                        let shift = key_event
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::SHIFT);
+                        match key_event.code {
+                            crossterm::event::KeyCode::Char('q') => break,
+                            crossterm::event::KeyCode::Esc => {
+                                if app.show_details_panel {
+                                    app.toggle_details_panel();
+                                    needs_redraw = true;
+                                } else if app.has_active_filter() {
+                                    app.clear_filter();
+                                    needs_redraw = true;
+                                } else {
+                                    break;
                                 }
                             }
-                            needs_redraw = true;
-                            last_activity_time = std::time::Instant::now();
-                        }
-                        crossterm::event::KeyCode::Char('n')
-                        | crossterm::event::KeyCode::Char('N')
-                        | crossterm::event::KeyCode::Esc => {
-                            app.cancel_delete_confirmation();
-                            needs_redraw = true;
-                        }
-                        _ => {}
-                    }
-                } else if app.filter_input_active {
-                    match key_event.code {
-                        crossterm::event::KeyCode::Enter => {
-                            app.commit_filter();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Esc => {
-                            app.cancel_filter();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Backspace => {
-                            app.pop_filter_char();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char(c) => {
-                            app.push_filter_char(c);
-                            needs_redraw = true;
-                        }
-                        _ => {}
-                    }
-                } else {
-                    let items_per_page = cached_items_per_page;
-                    let ctrl = key_event
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL);
-                    let shift = key_event
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::SHIFT);
-                    match key_event.code {
-                        crossterm::event::KeyCode::Char('q') => break,
-                        crossterm::event::KeyCode::Esc => {
-                            if app.show_details_panel {
+                            crossterm::event::KeyCode::Char('d')
+                            | crossterm::event::KeyCode::Char('D')
+                            | crossterm::event::KeyCode::Char('x')
+                            | crossterm::event::KeyCode::Char('X')
+                                if ctrl && shift =>
+                            {
+                                if app.get_selected_count() > 0 {
+                                    app.request_delete_selected();
+                                    needs_redraw = true;
+                                }
+                            }
+                            crossterm::event::KeyCode::Char('d')
+                            | crossterm::event::KeyCode::Char('D')
+                            | crossterm::event::KeyCode::Char('x')
+                            | crossterm::event::KeyCode::Char('X')
+                                if ctrl =>
+                            {
+                                app.request_delete_current();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Up
+                            | crossterm::event::KeyCode::Char('k') => {
+                                app.previous(items_per_page);
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Down
+                            | crossterm::event::KeyCode::Char('j') => {
+                                app.next(items_per_page);
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Home => {
+                                app.select_first();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::End => {
+                                app.select_last();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Left => {
+                                app.previous_page(items_per_page);
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Right => {
+                                app.next_page(items_per_page);
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char(' ') => {
+                                app.toggle_current_selection();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('a') => {
+                                app.select_all();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('d') => {
+                                app.deselect_all();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('s') => {
+                                app.toggle_sort(SortColumn::Size);
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('p') => {
+                                app.toggle_sort(SortColumn::Path);
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('m') => {
+                                app.toggle_sort(SortColumn::Age);
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('/') => {
+                                app.begin_filter_input();
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('i')
+                            | crossterm::event::KeyCode::Tab => {
                                 app.toggle_details_panel();
                                 needs_redraw = true;
-                            } else if app.has_active_filter() {
-                                app.clear_filter();
-                                needs_redraw = true;
-                            } else {
-                                break;
                             }
-                        }
-                        crossterm::event::KeyCode::Char('d')
-                        | crossterm::event::KeyCode::Char('D')
-                        | crossterm::event::KeyCode::Char('x')
-                        | crossterm::event::KeyCode::Char('X')
-                            if ctrl && shift =>
-                        {
-                            if app.get_selected_count() > 0 {
-                                app.request_delete_selected();
+                            crossterm::event::KeyCode::Char('?') => {
+                                app.toggle_help();
                                 needs_redraw = true;
                             }
-                        }
-                        crossterm::event::KeyCode::Char('d')
-                        | crossterm::event::KeyCode::Char('D')
-                        | crossterm::event::KeyCode::Char('x')
-                        | crossterm::event::KeyCode::Char('X')
-                            if ctrl =>
-                        {
-                            app.request_delete_current();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                            app.previous(items_per_page);
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                            app.next(items_per_page);
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Home => {
-                            app.select_first();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::End => {
-                            app.select_last();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Left => {
-                            app.previous_page(items_per_page);
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Right => {
-                            app.next_page(items_per_page);
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char(' ') => {
-                            app.toggle_current_selection();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('a') => {
-                            app.select_all();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('d') => {
-                            app.deselect_all();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('s') => {
-                            app.toggle_sort(SortColumn::Size);
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('p') => {
-                            app.toggle_sort(SortColumn::Path);
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('m') => {
-                            app.toggle_sort(SortColumn::Age);
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('/') => {
-                            app.begin_filter_input();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('i') | crossterm::event::KeyCode::Tab => {
-                            app.toggle_details_panel();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('?') => {
-                            app.toggle_help();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('o') => {
-                            let _ = app.open_selected_in_file_manager();
-                        }
-                        crossterm::event::KeyCode::Char('y')
-                            if key_event
-                                .modifiers
-                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
-                        {
-                            if app.copy_selected_path().is_ok() {
-                                app.set_status_toast("Copied path to clipboard".to_string());
+                            crossterm::event::KeyCode::Char('o') => {
+                                let _ = app.open_selected_in_file_manager();
                             }
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Delete => {
-                            if app.get_selected_count() > 0 {
-                                app.request_delete_selected();
-                            } else {
+                            crossterm::event::KeyCode::Char('y')
+                                if key_event
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                if app.copy_selected_path().is_ok() {
+                                    app.set_status_toast("Copied path to clipboard".to_string());
+                                }
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Delete => {
+                                if app.get_selected_count() > 0 {
+                                    app.request_delete_selected();
+                                } else {
+                                    app.request_delete_current();
+                                }
+                                needs_redraw = true;
+                            }
+                            crossterm::event::KeyCode::Char('f') => {
                                 app.request_delete_current();
+                                needs_redraw = true;
                             }
-                            needs_redraw = true;
+                            crossterm::event::KeyCode::Char('c')
+                                if app.get_selected_count() > 0 =>
+                            {
+                                app.request_delete_selected();
+                                needs_redraw = true;
+                            }
+                            _ => {}
                         }
-                        crossterm::event::KeyCode::Char('f') => {
-                            app.request_delete_current();
-                            needs_redraw = true;
-                        }
-                        crossterm::event::KeyCode::Char('c') if app.get_selected_count() > 0 => {
-                            app.request_delete_selected();
-                            needs_redraw = true;
-                        }
-                        _ => {}
                     }
-                }
                 }
                 _ => {}
             }
@@ -706,12 +695,12 @@ fn display_directories_text(pattern: &str, path: &str, ignore_patterns: &str) ->
 
 #[cfg(test)]
 mod tests {
+    use super::test_helpers::{
+        SELECTION_INDICATOR_COLOR, TEXT_SECONDARY, get_calculation_status_icon, get_directory_icon,
+        get_loading_frame, get_selection_indicator_color,
+    };
     use super::*;
     use ratatui::style::Color;
-    use super::test_helpers::{
-        get_calculation_status_icon, get_directory_icon, get_loading_frame,
-        get_selection_indicator_color, SELECTION_INDICATOR_COLOR, TEXT_SECONDARY,
-    };
 
     // Helper function to create DirectoryInfo for tests
     fn create_test_dir(path: &str, size: u64, formatted_size: &str) -> DirectoryInfo {

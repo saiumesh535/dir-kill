@@ -38,8 +38,9 @@ impl Config {
             return Ok(());
         };
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory {}", parent.display())
+            })?;
         }
         std::fs::write(&path, toml::to_string_pretty(self)?)
             .with_context(|| format!("Failed to write config {}", path.display()))?;
@@ -74,7 +75,10 @@ mod tests {
     #[test]
     fn test_shorten_home_path() {
         if let Ok(home) = std::env::var("HOME") {
-            assert_eq!(shorten_home_path(&format!("{home}/Developer")), "~/Developer");
+            assert_eq!(
+                shorten_home_path(&format!("{home}/Developer")),
+                "~/Developer"
+            );
             assert_eq!(shorten_home_path(&home), "~");
         }
         assert_eq!(shorten_home_path("/other/path"), "/other/path");

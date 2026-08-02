@@ -7,8 +7,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc};
 
 /// Ignore patterns for directory filtering
 #[derive(Debug, Clone)]
@@ -656,11 +656,11 @@ pub fn format_duration(duration: &std::time::Duration) -> String {
 pub fn format_duration_in_seconds(duration: &std::time::Duration) -> String {
     let secs = duration.as_secs_f64();
     if secs >= 10.0 {
-        format!("{:.0} seconds", secs)
+        format!("{secs:.0} seconds")
     } else if secs >= 1.0 {
-        format!("{:.1} seconds", secs)
+        format!("{secs:.1} seconds")
     } else if secs > 0.0 {
-        format!("{:.2} seconds", secs)
+        format!("{secs:.2} seconds")
     } else {
         "0 seconds".to_string()
     }
