@@ -1,13 +1,13 @@
 use crate::fs::DirectoryInfo;
 use crate::ui::app::{App, SortColumn, SortDirection};
-use std::borrow::Cow;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, Wrap},
-    Frame,
 };
+use std::borrow::Cow;
 
 // Semantic roles (+ neutrals). Max four accents.
 const FOCUS: Color = Color::Rgb(131, 165, 152); // aqua — brand + focus glyph
@@ -216,22 +216,37 @@ fn render_footer(f: &mut Frame, app: &App, ctx: &RenderContext, area: Rect) {
     let selected = app.get_selected_count();
 
     let mut spans = vec![
-        Span::styled(" ↑↓", Style::default().fg(FOCUS).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " ↑↓",
+            Style::default().fg(FOCUS).add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  ", Style::default()),
-        Span::styled("space", Style::default().fg(FOCUS).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "space",
+            Style::default().fg(FOCUS).add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  ", Style::default()),
     ];
 
     if selected > 0 {
         spans.extend([
-            Span::styled("f", Style::default().fg(DANGER).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "f",
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("/", Style::default().fg(MUTED)),
-            Span::styled("c", Style::default().fg(DANGER).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "c",
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" delete  ", Style::default().fg(MUTED)),
         ]);
     } else {
         spans.extend([
-            Span::styled("f", Style::default().fg(DANGER).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "f",
+                Style::default().fg(DANGER).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" delete  ", Style::default().fg(MUTED)),
         ]);
     }
@@ -246,11 +261,7 @@ fn render_footer(f: &mut Frame, app: &App, ctx: &RenderContext, area: Rect) {
     // Right: sort · page · selection CTA
     let mut right = app.sort_label();
     if total_pages > 1 {
-        right = format!(
-            "{right} · {}/{}",
-            app.current_page + 1,
-            total_pages
-        );
+        right = format!("{right} · {}/{}", app.current_page + 1, total_pages);
     }
     if selected > 0 {
         right = format!(
@@ -379,7 +390,10 @@ fn sort_label(label: &str, column: SortColumn, app: &App) -> Span<'static> {
         label.to_string()
     };
     if active {
-        Span::styled(text, Style::default().fg(FOCUS).add_modifier(Modifier::BOLD))
+        Span::styled(
+            text,
+            Style::default().fg(FOCUS).add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::styled(text, Style::default().fg(MUTED))
     }
@@ -401,7 +415,9 @@ fn row_for_directory(
         crate::fs::DeletionStatus::Deleting => ("…", Style::default().fg(VALUE)),
         crate::fs::DeletionStatus::Deleted => (
             "×",
-            Style::default().fg(MUTED).add_modifier(Modifier::CROSSED_OUT),
+            Style::default()
+                .fg(MUTED)
+                .add_modifier(Modifier::CROSSED_OUT),
         ),
         crate::fs::DeletionStatus::Error(_) => ("!", Style::default().fg(DANGER)),
         crate::fs::DeletionStatus::Normal if dir.selected => (
@@ -412,7 +428,7 @@ fn row_for_directory(
     };
 
     let (size_text, size_style) = size_cell(dir, quiet);
-    let path_fg = if focused { TEXT } else { TEXT };
+    let path_fg = TEXT;
     let path_dim = MUTED;
 
     let mut row = Row::new(vec![
@@ -447,9 +463,10 @@ fn size_cell(dir: &DirectoryInfo, quiet: bool) -> (Cow<'static, str>, Style) {
         crate::fs::CalculationStatus::Error(_) => {
             (Cow::Borrowed("err"), Style::default().fg(DANGER))
         }
-        crate::fs::CalculationStatus::Completed => {
-            (Cow::Owned(dir.formatted_size.clone()), size_value_style(&dir.formatted_size, quiet))
-        }
+        crate::fs::CalculationStatus::Completed => (
+            Cow::Owned(dir.formatted_size.clone()),
+            size_value_style(&dir.formatted_size, quiet),
+        ),
     }
 }
 
@@ -469,8 +486,7 @@ fn path_line(dir: &DirectoryInfo, pattern: &str, main: Color, dim: Color) -> Lin
 
     if !pattern.is_empty() && path.len() > pattern.len() + 1 {
         let suffix_start = path.len() - pattern.len() - 1;
-        if path.as_bytes().get(suffix_start) == Some(&b'/')
-            && &path[suffix_start + 1..] == pattern
+        if path.as_bytes().get(suffix_start) == Some(&b'/') && &path[suffix_start + 1..] == pattern
         {
             return Line::from(vec![
                 Span::styled(
@@ -537,9 +553,7 @@ fn render_details_panel(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     f.render_widget(
-        Paragraph::new(text)
-            .block(block)
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(text).block(block).wrap(Wrap { trim: true }),
         area,
     );
 }
@@ -551,7 +565,10 @@ fn render_help_overlay(f: &mut Frame) {
     let mut lines = vec![
         Line::from(Span::styled(
             " Shortcuts ",
-            Style::default().fg(BG).bg(FOCUS).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BG)
+                .bg(FOCUS)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
@@ -681,12 +698,18 @@ fn render_delete_confirm(f: &mut Frame, app: &App) {
     lines.push(Line::from(vec![
         Span::styled(
             " y ",
-            Style::default().fg(BG).bg(DANGER).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BG)
+                .bg(DANGER)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" confirm   ", Style::default().fg(MUTED)),
         Span::styled(
             " n ",
-            Style::default().fg(BG).bg(MUTED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BG)
+                .bg(MUTED)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" cancel", Style::default().fg(MUTED)),
     ]));
@@ -734,10 +757,16 @@ fn render_filter_overlay(f: &mut Frame, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " filter ",
-                Style::default().fg(BG).bg(FOCUS).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(BG)
+                    .bg(FOCUS)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(query, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                query,
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("   Enter · Esc", Style::default().fg(MUTED)),
         ]))
         .block(
@@ -867,7 +896,10 @@ mod tests {
         app.set_discovery_status(crate::ui::app::DiscoveryStatus::Complete);
 
         let (_left, hero) = header_metrics(&app);
-        assert!(hero.contains("sel"), "hero should show selection CTA: {hero}");
+        assert!(
+            hero.contains("sel"),
+            "hero should show selection CTA: {hero}"
+        );
         assert!(!hero.contains("releasable"));
     }
 }

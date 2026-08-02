@@ -767,40 +767,31 @@ mod benchmarks {
         create_test_directory_structure(dir_path);
 
         println!("\n=== Directory Size Calculation Benchmark ===");
-        println!("Test directory: {:?}", dir_path);
+        println!("Test directory: {dir_path:?}");
 
         // Benchmark original method
         let start = Instant::now();
         let original_size = calculate_directory_size(dir_path).unwrap();
         let original_duration = start.elapsed();
-        println!(
-            "Original method: {} bytes in {:?}",
-            original_size, original_duration
-        );
+        println!("Original method: {original_size} bytes in {original_duration:?}");
 
         // Benchmark optimized method
         let start = Instant::now();
         let optimized_size = calculate_directory_size_optimized(dir_path).unwrap();
         let optimized_duration = start.elapsed();
-        println!(
-            "Optimized method: {} bytes in {:?}",
-            optimized_size, optimized_duration
-        );
+        println!("Optimized method: {optimized_size} bytes in {optimized_duration:?}");
 
         // Benchmark parallel method
         let start = Instant::now();
         let parallel_size = calculate_directory_size_parallel(dir_path).unwrap();
         let parallel_duration = start.elapsed();
-        println!(
-            "Parallel method: {} bytes in {:?}",
-            parallel_size, parallel_duration
-        );
+        println!("Parallel method: {parallel_size} bytes in {parallel_duration:?}");
 
         // Benchmark jwalk method
         let start = Instant::now();
         let jwalk_size = calculate_directory_size_jwalk(dir_path).unwrap();
         let jwalk_duration = start.elapsed();
-        println!("Jwalk method: {} bytes in {:?}", jwalk_size, jwalk_duration);
+        println!("Jwalk method: {jwalk_size} bytes in {jwalk_duration:?}");
 
         // Verify jwalk uses apparent/logical size (same as original); disk-size helpers may differ
         assert_eq!(
@@ -816,15 +807,13 @@ mod benchmarks {
 
         // Performance comparison
         println!("\n=== Performance Comparison ===");
-        println!("Original method: {:?}", original_duration);
+        println!("Original method: {original_duration:?}");
         println!(
-            "Optimized method: {:?} ({:.1}x faster)",
-            optimized_duration,
+            "Optimized method: {optimized_duration:?} ({:.1}x faster)",
             original_duration.as_nanos() as f64 / optimized_duration.as_nanos() as f64
         );
         println!(
-            "Parallel method: {:?} ({:.1}x faster)",
-            parallel_duration,
+            "Parallel method: {parallel_duration:?} ({:.1}x faster)",
             original_duration.as_nanos() as f64 / parallel_duration.as_nanos() as f64
         );
         println!(
@@ -907,7 +896,7 @@ mod benchmarks {
 
         // Create some larger files to make the benchmark more realistic
         for i in 0..5 {
-            let large_file = root.join(format!("large_file_{}.txt", i));
+            let large_file = root.join(format!("large_file_{i}.txt"));
             let content = "x".repeat(1024 * 1024); // 1MB file
             fs::write(large_file, content).unwrap();
         }

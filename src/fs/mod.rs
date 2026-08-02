@@ -7,8 +7,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc};
 
 /// Ignore patterns for directory filtering
 #[derive(Debug, Clone)]
@@ -389,15 +389,15 @@ fn walk_matching_directories_parallel(
                 }
 
                 if name == OsStr::new(&pattern_for_prune) {
-                    if entry.path() != root_buf && !stop.load(Ordering::Relaxed) {
-                        if sender
+                    if entry.path() != root_buf
+                        && !stop.load(Ordering::Relaxed)
+                        && sender
                             .send(DiscoveryMessage::DirectoryFound(
                                 entry.path().to_string_lossy().into_owned(),
                             ))
                             .is_err()
-                        {
-                            stop.store(true, Ordering::Relaxed);
-                        }
+                    {
+                        stop.store(true, Ordering::Relaxed);
                     }
                     return false;
                 }
@@ -475,7 +475,7 @@ pub fn find_directories_with_size_and_ignore(
         .collect();
 
     // Sort by size (largest first)
-    directory_infos.sort_by(|a, b| b.size.cmp(&a.size));
+    directory_infos.sort_by_key(|b| std::cmp::Reverse(b.size));
 
     Ok(directory_infos)
 }
@@ -581,6 +581,7 @@ pub fn calculate_directory_size_jwalk(path: &Path) -> Result<u64> {
 
 /// Cross-platform jwalk size path: sum file lengths inside `process_read_dir`
 /// and only descend into directories (no per-file iterator traffic).
+#[cfg(any(test, not(target_os = "macos")))]
 pub(crate) fn calculate_directory_size_jwalk_fallback(path: &Path) -> Result<u64> {
     if !path.is_dir() {
         return Ok(0);
@@ -655,11 +656,11 @@ pub fn format_duration(duration: &std::time::Duration) -> String {
 pub fn format_duration_in_seconds(duration: &std::time::Duration) -> String {
     let secs = duration.as_secs_f64();
     if secs >= 10.0 {
-        format!("{:.0} seconds", secs)
+        format!("{secs:.0} seconds")
     } else if secs >= 1.0 {
-        format!("{:.1} seconds", secs)
+        format!("{secs:.1} seconds")
     } else if secs > 0.0 {
-        format!("{:.2} seconds", secs)
+        format!("{secs:.2} seconds")
     } else {
         "0 seconds".to_string()
     }
